@@ -1,6 +1,8 @@
 import os
 import time
 import re
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import streamlit as st
 
@@ -24,13 +26,14 @@ from pinecone import Pinecone
 
 # api keys section 
 
-SERPAPI_API_KEY = "Enter api"
-PINECONE_API_KEY = "Enter api"
+SERPAPI_API_KEY = " API "
+PINECONE_API_KEY = " API "
 
 os.environ["SERPAPI_API_KEY"] = SERPAPI_API_KEY
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
 
 INDEX_NAME = "rag-embedds"
+PINECONE_NAMESPACE = "web-rag-records"
 
 
 # llama models one for using llm and another for Q&A
@@ -42,11 +45,17 @@ def get_embeddings():
 
 @st.cache_resource
 def get_llm():
-    return OllamaLLM(model="llama3.2:1b")
+    return OllamaLLM(model="llama3.2", temperature=0)
+
+
+@st.cache_resource
+def get_llm_simple():
+    return OllamaLLM(model="llama3.2")
 
 
 embeddings = get_embeddings()
 llm = get_llm()
+llm_simple = get_llm_simple()
 
 
 # connecting pinecone VDB 
@@ -69,28 +78,49 @@ else:
 # prompt template
 
 template = """
-You are an expert AI assistant.
+You are a precise and reliable AI assistant.
 
-Use the provided context to answer the question in detail.
+Your task is to answer the user's question using ONLY the information
+present in the provided context.
 
 Rules:
-- Explain the concept clearly.
-- Use simple language.
-- Provide examples if possible.
-- Structure the answer in paragraphs.
+- Do NOT use outside knowledge.
+- If exact details are missing, provide the closest related answer from available context.
+- Do not invent exact names, numbers, or dates not present in context.
+- If context is limited, explicitly mention that the response is based on limited context.
+- Keep the response clear, factual, and detailed.
+- Write around {target_lines} lines.
+- Use simple plain-language sentences.
+- Include key facts, conditions, and short explanation where relevant.
 
 Question:
 {question}
 
-Context:
+Retrieved Context:
 {context}
 
-Detailed Answer:
+Answer:
+"""
+
+llm_only_template = """
+You are a precise and reliable AI assistant.
+
+Rules:
+- Keep the answer detailed, factual, and direct.
+- Write between {target_lines_min} and {target_lines_max} lines.
+- Use simple plain-language sentences.
+- Include key facts and short explanation where useful.
+- Do not include links, URLs, citations, or source lists.
+
+Question:
+{question}
+
+Answer:
 """
 
 # serp ai for webscrapping
 
-def search_web(query):
+def search_web(query, max_results=3):
 
     search = SerpAPIWrapper()
 
@@ -99,7 +129,7 @@ def search_web(query):
     urls = []
 
     if "organic_results" in results:
-        for r in results["organic_results"][:5]:
+        for r in results["organic_results"][:max_results]:
             urls.append(r["link"])
 
     return urls
@@ -124,16 +154,17 @@ def load_pages(urls):
 
 # splits web scrapped things into chunks which are provided to pinecone VDB which stores these as embeddings
 
-def split_text(documents):
+def split_text(documents, chunk_size=1200, chunk_overlap=100, max_chunks=18):
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=2000,
-        chunk_overlap=100
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
     )
 
-    return splitter.split_documents(documents)
+    chunks = splitter.split_documents(documents)
+    return chunks[:max_chunks]
 
-def index_documents(docs):
+def index_documents(docs, namespace):
 
     texts = []
     metadatas = []
@@ -151,25 +182,71 @@ def index_documents(docs):
             "created_at": timestamp
         })
 
-        ids.append(f"chunk-{timestamp}-{i}")
+        ids.append(f"chunk-{timestamp}-{i}-{uuid.uuid4().hex[:8]}")
 
     vector_store.add_texts(
         texts=texts,
         metadatas=metadatas,
-        ids=ids
+        ids=ids,
+        namespace=namespace
     )
 
 
 # retrieve documents
 
-def retrieve_documents(query):
+def retrieve_documents(query, namespace, k=5, relevance_threshold=0.40):
 
-    return vector_store.similarity_search(query, k=3)
+    docs_with_scores = []
+
+    try:
+        raw_results = vector_store.similarity_search_with_relevance_scores(
+            query,
+            k=k,
+            namespace=namespace
+        )
+
+        for doc, score in raw_results:
+            if score >= relevance_threshold:
+                docs_with_scores.append((doc, float(score)))
+
+        # Fallback 1: Relax threshold if nothing passes strict filter
+        if not docs_with_scores:
+            relaxed_threshold = max(0.20, relevance_threshold - 0.15)
+            for doc, score in raw_results:
+                if score >= relaxed_threshold:
+                    docs_with_scores.append((doc, float(score)))
+
+        # Fallback 2: Always return top-k from raw relevance results if still empty
+        if not docs_with_scores and raw_results:
+            docs_with_scores = [(doc, float(score)) for doc, score in raw_results[:k]]
+    except Exception:
+        raw_results = vector_store.similarity_search(query, k=k, namespace=namespace)
+        docs_with_scores = [(doc, 1.0) for doc in raw_results]
+
+    return docs_with_scores
+
+
+def format_retrieved_context(docs_with_scores):
+    if not docs_with_scores:
+        return ""
+
+    blocks = []
+    for idx, (doc, score) in enumerate(docs_with_scores, start=1):
+        source = doc.metadata.get("source", "unknown")
+        chunk = re.sub(r"\s+", " ", doc.page_content.strip())
+        blocks.append(
+            f"[Document {idx}]\n"
+            f"Source: {source}\n"
+            f"Relevance: {score:.3f}\n"
+            f"Content: {chunk}"
+        )
+
+    return "\n\n---\n\n".join(blocks)
 
 
 # answer generation
 
-def generate_answer(question, context):
+def generate_answer(question, context, target_lines):
 
     prompt = ChatPromptTemplate.from_template(template)
 
@@ -177,8 +254,301 @@ def generate_answer(question, context):
 
     return chain.invoke({
         "question": question,
-        "context": context
+        "context": context,
+        "target_lines": target_lines
     })
+
+
+def generate_llm_only_answer(question, target_lines):
+
+    prompt = ChatPromptTemplate.from_template(llm_only_template)
+
+    chain = prompt | llm_simple
+
+    return chain.invoke({
+        "question": question,
+        "target_lines_min": max(6, target_lines - 2),
+        "target_lines_max": max(8, target_lines)
+    })
+
+
+def estimate_answer_lines(question):
+    q = question.strip().lower()
+    if any(token in q for token in ["why", "how", "compare", "difference", "advantages", "disadvantages", "in detail"]):
+        return 12
+    if any(token in q for token in ["explain", "describe", "overview", "uses", "working", "benefits"]):
+        return 10
+    return 12
+
+
+def infer_output_type(question):
+    q = question.strip().lower()
+
+    factual_markers = [
+        "what is", "who is", "when", "where", "which", "define", "full form", "capital", "mother", "father"
+    ]
+    analytical_markers = [
+        "why", "how", "compare", "difference", "advantages", "disadvantages", "pros", "cons", "in detail"
+    ]
+
+    if any(marker in q for marker in analytical_markers):
+        return "analytical"
+    if any(marker in q for marker in factual_markers):
+        return "factual"
+    return "descriptive"
+
+
+def get_speed_profile(question):
+    target_lines = estimate_answer_lines(question)
+    output_type = infer_output_type(question)
+
+    if output_type == "factual":
+        return {
+            "target_lines": target_lines,
+            "output_type": output_type,
+            "max_urls": 4,
+            "max_urls_cap": 10,
+            "max_chunks": 30,
+            "max_chunks_cap": 90,
+            "retrieval_k": 5,
+            "retrieval_k_cap": 9,
+            "relevance_threshold": 0.40,
+            "min_relevance_threshold": 0.20,
+            "chunk_size": 1400,
+            "chunk_overlap": 180,
+            "max_expansions": 3
+        }
+
+    if output_type == "descriptive":
+        return {
+            "target_lines": target_lines,
+            "output_type": output_type,
+            "max_urls": 5,
+            "max_urls_cap": 12,
+            "max_chunks": 45,
+            "max_chunks_cap": 120,
+            "retrieval_k": 6,
+            "retrieval_k_cap": 10,
+            "relevance_threshold": 0.38,
+            "min_relevance_threshold": 0.18,
+            "chunk_size": 1700,
+            "chunk_overlap": 220,
+            "max_expansions": 3
+        }
+
+    return {
+        "target_lines": target_lines,
+        "output_type": "analytical",
+        "max_urls": 7,
+        "max_urls_cap": 14,
+        "max_chunks": 60,
+        "max_chunks_cap": 150,
+        "retrieval_k": 7,
+        "retrieval_k_cap": 12,
+        "relevance_threshold": 0.35,
+        "min_relevance_threshold": 0.15,
+        "chunk_size": 2100,
+        "chunk_overlap": 260,
+        "max_expansions": 4
+    }
+
+
+def is_context_sufficient(docs_with_scores, context, output_type):
+    if not docs_with_scores or not context.strip():
+        return False
+
+    min_requirements = {
+        "factual": {"docs": 1, "chars": 300},
+        "descriptive": {"docs": 1, "chars": 500},
+        "analytical": {"docs": 2, "chars": 900},
+    }
+
+    req = min_requirements.get(output_type, min_requirements["descriptive"])
+
+    return len(docs_with_scores) >= req["docs"] and len(context) >= req["chars"]
+
+
+def collect_adaptive_context(question, namespace, profile):
+    last_docs_with_scores = []
+    last_context = ""
+
+    for attempt in range(profile["max_expansions"]):
+        current_max_urls = min(profile["max_urls"] + (attempt * 2), profile["max_urls_cap"])
+        current_max_chunks = min(profile["max_chunks"] + (attempt * 18), profile["max_chunks_cap"])
+        current_retrieval_k = min(profile["retrieval_k"] + attempt, profile["retrieval_k_cap"])
+        current_threshold = max(
+            profile["min_relevance_threshold"],
+            profile["relevance_threshold"] - (attempt * 0.06)
+        )
+
+        urls = search_web(question, max_results=current_max_urls)
+        documents = load_pages(urls)
+
+        if len(documents) == 0:
+            continue
+
+        chunks = split_text(
+            documents,
+            chunk_size=profile["chunk_size"],
+            chunk_overlap=profile["chunk_overlap"],
+            max_chunks=current_max_chunks
+        )
+
+        if len(chunks) == 0:
+            continue
+
+        index_documents(chunks, namespace=namespace)
+
+        docs_with_scores = retrieve_documents(
+            question,
+            namespace=namespace,
+            k=current_retrieval_k,
+            relevance_threshold=current_threshold
+        )
+
+        context = format_retrieved_context(docs_with_scores)
+
+        last_docs_with_scores = docs_with_scores
+        last_context = context
+
+        if is_context_sufficient(docs_with_scores, context, profile["output_type"]):
+            break
+
+    return last_docs_with_scores, last_context
+
+
+def render_typewriter(text, delay=0.01):
+    placeholder = st.empty()
+    rendered = ""
+
+    for ch in text:
+        rendered += ch
+        placeholder.markdown(rendered)
+        time.sleep(delay)
+
+
+def render_dual_typewriter(left_placeholder, right_placeholder, left_text, right_text, delay=0.006):
+    left_rendered = ""
+    right_rendered = ""
+    max_len = max(len(left_text), len(right_text))
+
+    for i in range(max_len):
+        if i < len(left_text):
+            left_rendered += left_text[i]
+            left_placeholder.markdown(left_rendered)
+
+        if i < len(right_text):
+            right_rendered += right_text[i]
+            right_placeholder.markdown(right_rendered)
+
+        time.sleep(delay)
+
+
+def sanitize_answer_text(answer):
+    text = str(answer)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1", text)
+    text = re.sub(r"\n\s*(Sources?|References?)\s*:.*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def fallback_no_context_answer():
+    return "The provided context does not contain enough information to answer this question."
+
+
+def compute_hallucination_metrics(result):
+    grounding_pct = float(result["overall_confidence"])
+    hallucination_pct = max(0.0, min(100.0, 100.0 - grounding_pct))
+
+    if hallucination_pct <= 25:
+        status = "Not Hallucinated"
+    elif hallucination_pct <= 50:
+        status = "Mild Hallucination"
+    else:
+        status = "Likely Hallucinated"
+
+    return {
+        "grounding_pct": grounding_pct,
+        "hallucination_pct": hallucination_pct,
+        "status": status
+    }
+
+
+def tokenize_text(text, min_len=3):
+    stop_words = {
+        "the", "and", "for", "that", "this", "with", "from", "into", "have", "has", "had",
+        "are", "was", "were", "will", "would", "shall", "could", "should", "about", "your",
+        "their", "there", "which", "when", "where", "what", "who", "why", "how", "does",
+        "did", "can", "also", "than", "then", "them", "they", "its", "it's", "our", "you"
+    }
+    raw_tokens = re.findall(r"\b[a-zA-Z][a-zA-Z0-9\-']+\b", text.lower())
+    return [token for token in raw_tokens if len(token) >= min_len and token not in stop_words]
+
+
+def token_support_from_docs(answer_text, docs, max_tokens=20):
+    answer_tokens = tokenize_text(answer_text)
+    context_tokens = set()
+
+    for doc in docs:
+        context_tokens.update(tokenize_text(doc.page_content))
+
+    unique_answer_tokens = []
+    seen = set()
+    for token in answer_tokens:
+        if token not in seen:
+            seen.add(token)
+            unique_answer_tokens.append(token)
+
+    if not unique_answer_tokens:
+        return {
+            "token_support_pct": 100.0,
+            "token_hallucination_pct": 0.0,
+            "matched_tokens": [],
+            "unmatched_tokens": []
+        }
+
+    matched = [token for token in unique_answer_tokens if token in context_tokens]
+    unmatched = [token for token in unique_answer_tokens if token not in context_tokens]
+
+    support_pct = (len(matched) / len(unique_answer_tokens)) * 100.0
+    hallucination_pct = 100.0 - support_pct
+
+    return {
+        "token_support_pct": max(0.0, min(100.0, support_pct)),
+        "token_hallucination_pct": max(0.0, min(100.0, hallucination_pct)),
+        "matched_tokens": matched[:max_tokens],
+        "unmatched_tokens": unmatched[:max_tokens]
+    }
+
+
+def merge_hallucination_scores(embedding_hallucination_pct, token_hallucination_pct):
+    # Weighted blend: embeddings capture semantic support, tokens capture literal support
+    return (0.65 * embedding_hallucination_pct) + (0.35 * token_hallucination_pct)
+
+
+def llm_hallucination_verdict_word(llm_hallucination_pct, rag_hallucination_pct):
+    # YES => LLM is hallucinating more than RAG by meaningful margin
+    if (llm_hallucination_pct - rag_hallucination_pct) >= 5.0:
+        return "LLM Hallucinated"
+    return "LLM Not Hallucinated"
+
+
+def display_source_text_snippets(docs, max_items=3, preview_chars=350):
+    st.subheader("Source Context Used")
+
+    if not docs:
+        st.info("No source context retrieved.")
+        return
+
+    for i, doc in enumerate(docs[:max_items], 1):
+        source = doc.metadata.get("source", "Unknown source")
+        snippet = doc.page_content.strip().replace("\n", " ")
+        snippet = re.sub(r"\s+", " ", snippet)
+        snippet = snippet[:preview_chars] + ("..." if len(snippet) > preview_chars else "")
+
+        with st.expander(f"Source {i}: {source}", expanded=(i == 1)):
+            st.write(snippet)
 
 
 # ===== HALLUCINATION DETECTION FUNCTIONS =====
@@ -524,53 +894,150 @@ def search_images(query):
 # streamlit UI
 
 st.title("Web Scrapper RAG Assistant")
+st.subheader("RAG Grounded Response")
 
-question = st.chat_input("Ask anything...")
+st.markdown(
+    """
+    <style>
+    .main .block-container {
+        max-width: 1350px;
+        padding-top: 2rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+    div[data-testid="stHorizontalBlock"] {
+        gap: 2rem;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        min-height: 420px;
+        padding: 1.1rem 1.1rem 0.8rem 1.1rem;
+        border-radius: 12px;
+    }
+    div[data-testid="stVerticalBlock"] > div[data-testid="stMarkdownContainer"] {
+        line-height: 1.55;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
+with st.form("rag_compare_form", clear_on_submit=False):
+    question = st.text_input("Ask anything...")
+    run_button = st.form_submit_button("Generate")
 
-if question:
+if run_button and question.strip():
+    profile = get_speed_profile(question)
+    namespace = PINECONE_NAMESPACE
 
-    st.chat_message("user").write(question)
-    
+    with st.spinner("Collecting adaptive context from web + Pinecone..."):
+        docs_with_scores, context = collect_adaptive_context(question, namespace, profile)
 
-    with st.spinner("Searching Google..."):
+    docs = [item[0] for item in docs_with_scores]
 
-        urls = search_web(question)
+    if len(docs_with_scores) == 0:
+        context = ""
+        docs = []
 
-    st.subheader("Sources Found")
+    with st.spinner("Generating both responses..."):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            llm_future = executor.submit(
+                generate_llm_only_answer,
+                question,
+                profile["target_lines"]
+            )
+            if context.strip():
+                rag_future = executor.submit(
+                    generate_answer,
+                    question,
+                    context,
+                    profile["target_lines"]
+                )
+            else:
+                rag_future = executor.submit(
+                    generate_llm_only_answer,
+                    question,
+                    profile["target_lines"]
+                )
 
-    for url in urls:
-        st.write(url)
+            llm_answer = sanitize_answer_text(llm_future.result())
+            rag_answer = sanitize_answer_text(rag_future.result())
 
-    with st.spinner("Scraping websites..."):
+    with st.spinner("Computing hallucination analysis..."):
+        rag_result = detect_hallucination(rag_answer, docs, embeddings)
+        llm_result = detect_hallucination(llm_answer, docs, embeddings)
 
-        documents = load_pages(urls)
+    st.markdown("### Response Comparison")
 
-    if len(documents) == 0:
-        st.error("Could not scrape any pages")
-        st.stop()
+    col1, col2 = st.columns(2, gap="large")
 
-    chunks = split_text(documents)
+    with col1:
+        st.markdown("#### LLM Output")
+        with st.container(border=True):
+            llm_placeholder = st.empty()
+            llm_status_placeholder = st.empty()
+            llm_progress_placeholder = st.empty()
+            llm_token_placeholder = st.empty()
+            llm_support_placeholder = st.empty()
 
-    st.subheader("Chunks Created")
-    st.write(len(chunks))
+    with col2:
+        st.markdown("#### RAG Output")
+        with st.container(border=True):
+            rag_placeholder = st.empty()
+            rag_status_placeholder = st.empty()
+            rag_progress_placeholder = st.empty()
+            rag_token_placeholder = st.empty()
+            rag_support_placeholder = st.empty()
 
-    with st.spinner("Storing embeddings in Pinecone..."):
+    render_dual_typewriter(
+        llm_placeholder,
+        rag_placeholder,
+        llm_answer,
+        rag_answer,
+        delay=0.0035
+    )
 
-        index_documents(chunks)
+    llm_embed_metrics = compute_hallucination_metrics(llm_result)
+    rag_embed_metrics = compute_hallucination_metrics(rag_result)
 
-    docs = retrieve_documents(question)
+    llm_token_metrics = token_support_from_docs(llm_answer, docs)
+    rag_token_metrics = token_support_from_docs(rag_answer, docs)
 
-    context = "\n\n".join([doc.page_content for doc in docs])
+    llm_final_hallucination = merge_hallucination_scores(
+        llm_embed_metrics["hallucination_pct"],
+        llm_token_metrics["token_hallucination_pct"]
+    )
+    rag_final_hallucination = merge_hallucination_scores(
+        rag_embed_metrics["hallucination_pct"],
+        rag_token_metrics["token_hallucination_pct"]
+    )
 
-    with st.spinner("Generating answer..."):
+    llm_status = "Not Hallucinated" if llm_final_hallucination <= 25 else ("Mild Hallucination" if llm_final_hallucination <= 50 else "Likely Hallucinated")
+    rag_status = "Not Hallucinated" if rag_final_hallucination <= 25 else ("Mild Hallucination" if rag_final_hallucination <= 50 else "Likely Hallucinated")
 
-        answer = generate_answer(question, context)
+    llm_status_placeholder.caption(f"Hallucination: {llm_final_hallucination:.1f}% | {llm_status}")
+    llm_progress_placeholder.progress(llm_final_hallucination / 100.0)
+    llm_token_placeholder.caption(
+        "Hallucination Tokens: " + (", ".join(llm_token_metrics["unmatched_tokens"]) if llm_token_metrics["unmatched_tokens"] else "None")
+    )
+    llm_support_placeholder.caption(
+        f"Token Match with VDB Chunks: {llm_token_metrics['token_support_pct']:.1f}%"
+    )
 
-    st.chat_message("assistant").write(answer)
+    rag_status_placeholder.caption(f"Hallucination: {rag_final_hallucination:.1f}% | {rag_status}")
+    rag_progress_placeholder.progress(rag_final_hallucination / 100.0)
+    rag_token_placeholder.caption(
+        "Hallucination Tokens: " + (", ".join(rag_token_metrics["unmatched_tokens"]) if rag_token_metrics["unmatched_tokens"] else "None")
+    )
+    rag_support_placeholder.caption(
+        f"Token Match with VDB Chunks: {rag_token_metrics['token_support_pct']:.1f}%"
+    )
 
-    # Hallucination Detection
-    with st.spinner("Analyzing answer for hallucinations..."):
-        detection_result = detect_hallucination(answer, docs, embeddings)
-    
-    display_hallucination_report(detection_result)
+    stat_col1, stat_col2 = st.columns(2)
+    with stat_col1:
+        st.metric("LLM Hallucination %", f"{llm_final_hallucination:.1f}%")
+    with stat_col2:
+        st.metric("RAG Hallucination %", f"{rag_final_hallucination:.1f}%")
+
+    final_word = llm_hallucination_verdict_word(llm_final_hallucination, rag_final_hallucination)
+    st.markdown("### Final Verdict (One Word)")
+    st.markdown(f"## {final_word}")
