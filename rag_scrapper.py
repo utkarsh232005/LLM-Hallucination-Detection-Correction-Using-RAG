@@ -10,7 +10,12 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_ollama.llms import OllamaLLM
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_pinecone import PineconeVectorStore
+try:
+    from langchain_pinecone import PineconeVectorStore
+    HAS_LANGCHAIN_PINECONE = True
+except ImportError:
+    from langchain_community.vectorstores import Pinecone as PineconeVectorStore
+    HAS_LANGCHAIN_PINECONE = False
 from pinecone import Pinecone
 
 
@@ -34,7 +39,7 @@ def get_embeddings():
 
 @st.cache_resource
 def get_llm():
-    return OllamaLLM(model="llama3.2")
+    return OllamaLLM(model="llama3.2:1b")
 
 
 embeddings = get_embeddings()
@@ -45,10 +50,17 @@ llm = get_llm()
 
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
-vector_store = PineconeVectorStore(
-    index_name=INDEX_NAME,
-    embedding=embeddings
-)
+if HAS_LANGCHAIN_PINECONE:
+    vector_store = PineconeVectorStore(
+        index_name=INDEX_NAME,
+        embedding=embeddings
+    )
+else:
+    vector_store = PineconeVectorStore.from_existing_index(
+        index_name=INDEX_NAME,
+        embedding=embeddings,
+        text_key="text"
+    )
 
 
 # prompt template
