@@ -433,7 +433,7 @@ If you use this project in your research or work, please cite:
 ```bibtex
 @software{rag_hallucination_detection,
   title = {LLM Hallucination Detection & Correction Using RAG},
-  author = {Rishiraj Pathak},
+  author = {Rishiraj Pathak},{Utkarsh Patrikar},{Shreyash chimote},
   year = {2026},
   url = {https://github.com/Rishiraj-Pathak-27/LLM-Hallucination-Detection-Correction-Using-RAG}
 }
