@@ -7,3 +7,7 @@ langchain-pinecone
 pinecone>=6.0.0,<8.0.0
 selenium
 unstructured
+google-search-results
+numpy
+scikit-learn
+nltk
