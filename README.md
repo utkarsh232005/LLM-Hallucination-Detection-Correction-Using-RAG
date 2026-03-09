@@ -426,18 +426,5 @@ MIT License - see LICENSE file for details
 - **Streamlit** - Web UI framework
 - **SerpAPI** - Web search capabilities
 
-## Citation
-
-If you use this project in your research or work, please cite:
-
-```bibtex
-@software{rag_hallucination_detection,
-  title = {LLM Hallucination Detection & Correction Using RAG},
-  author = {Rishiraj Pathak},{Utkarsh Patrikar},
-  year = {2026},
-  url = {https://github.com/Rishiraj-Pathak-27/LLM-Hallucination-Detection-Correction-Using-RAG}
-}
-```
-
 ---
 
