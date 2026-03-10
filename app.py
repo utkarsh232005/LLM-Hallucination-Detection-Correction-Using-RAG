@@ -37,6 +37,14 @@ except ImportError:
     HAS_LANGCHAIN_PINECONE = False
 from pinecone import Pinecone
 
+from config import (
+    EMBEDDINGS_MODEL,
+    LLM_MODEL,
+    LLM_TEMPERATURE,
+    RAG_LLM_MODEL,
+    RAG_TEMPERATURE,
+)
+
 
 # ==================== TYPEWRITER SETTINGS ====================
 
@@ -73,19 +81,19 @@ CONTENT_PREVIEW_LENGTH = 500  # Longer content previews
 @st.cache_resource
 def get_embeddings():
     """Initialize embeddings model."""
-    return OllamaEmbeddings(model="nomic-embed-text")
+    return OllamaEmbeddings(model=EMBEDDINGS_MODEL)
 
 
 @st.cache_resource
 def get_llm():
-    """Initialize Llama 3.2 LLM for chat."""
-    return OllamaLLM(model="llama3.2", temperature=0.7)
+    """Initialize LLM for chat."""
+    return OllamaLLM(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
 
 
 @st.cache_resource
 def get_llm_rag():
-    """Initialize Llama 3.2 LLM for RAG (lower temperature for accuracy)."""
-    return OllamaLLM(model="llama3.2", temperature=0.1)
+    """Initialize LLM for RAG (lower temperature for accuracy)."""
+    return OllamaLLM(model=RAG_LLM_MODEL, temperature=RAG_TEMPERATURE)
 
 
 @st.cache_resource
@@ -636,6 +644,22 @@ def render_step_indicator(placeholder, step_num, step_text, status="running"):
     placeholder.markdown(html, unsafe_allow_html=True)
 
 
+def render_shimmer_loading(placeholder, label_text):
+    """Render shimmering status text while a response is being generated."""
+    placeholder.markdown(
+        f"""
+        <div style="display: flex; justify-content: flex-start; margin: 10px 0;">
+            <div style="background-color: #1f1f1f; color: #ddd; padding: 12px 18px;
+                        border-radius: 18px 18px 18px 5px; max-width: 80%;">
+                <small style="opacity: 0.7;">{label_text}</small><br>
+                <span class="shimmer-text">Generating response...</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ==================== UI COMPONENTS ====================
 
 def render_hallucination_meter(hallucination_pct):
@@ -831,6 +855,20 @@ def main():
         .step-running {
             animation: pulse 1s infinite;
         }
+        /* Shimmer loading text */
+        .shimmer-text {
+            background: linear-gradient(90deg, #9aa0a6 20%, #ffffff 50%, #9aa0a6 80%);
+            background-size: 300% 100%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: shimmer 1.6s linear infinite;
+            font-weight: 600;
+            letter-spacing: 0.2px;
+        }
+        @keyframes shimmer {
+            0% { background-position: 300% 0; }
+            100% { background-position: -300% 0; }
+        }
         </style>
     """, unsafe_allow_html=True)
     
@@ -952,6 +990,11 @@ def main():
                 render_step_indicator(step3_placeholder, 3, "Detect hallucination", "pending")
                 render_step_indicator(step4_placeholder, 4, "Decision & final response", "pending")
                 
+                # Show shimmer while LLM is generating
+                with response_placeholder.container():
+                    llm_display = st.empty()
+                    render_shimmer_loading(llm_display, "🦙 Llama")
+
                 # Generate LLM answer
                 llm_answer = sanitize_answer(generate_llm_answer(question, llm))
                 
@@ -1028,6 +1071,11 @@ def main():
                     st.session_state.show_rag = True
                     
                     if context:
+                        # Show shimmer while RAG is generating the corrected response
+                        with response_placeholder.container():
+                            rag_display = st.empty()
+                            render_shimmer_loading(rag_display, "🤖 RAG")
+
                         # Generate RAG answer and summary
                         rag_answer = sanitize_answer(generate_rag_answer(question, context, llm_rag))
                         summarized_info = summarize_rag_context(question, context, llm_rag)
