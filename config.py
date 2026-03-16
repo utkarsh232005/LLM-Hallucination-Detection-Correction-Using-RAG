@@ -23,12 +23,20 @@ PINECONE_NAMESPACE = "web-rag-records"
 
 # ==================== LLM SETTINGS ====================
 
-LLM_MODEL = "llama3.2"
-EMBEDDINGS_MODEL = "nomic-embed-text"
+# Main model used by chat generation.
+# You can switch models quickly by setting this in your `.env` file:
+# LLM_MODEL=llama3.2:1b
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.2:1b")
+
+# Optional dedicated model for RAG correction. Falls back to LLM_MODEL.
+# Example in `.env`: RAG_LLM_MODEL=qwen2.5:3b
+RAG_LLM_MODEL = os.getenv("RAG_LLM_MODEL", LLM_MODEL)
+
+EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "nomic-embed-text")
 
 # Temperature settings
-LLM_TEMPERATURE = 0.7  # For general chat - more creative
-RAG_TEMPERATURE = 0.1  # For RAG responses - more accurate
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))  # For general chat - more creative
+RAG_TEMPERATURE = float(os.getenv("RAG_TEMPERATURE", "0.1"))  # For RAG responses - more accurate
 
 
 # ==================== HALLUCINATION DETECTION THRESHOLDS ====================
