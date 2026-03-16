@@ -262,14 +262,16 @@ PINECONE_API_KEY = "your-pinecone-key-here"
 
 ### 7) Run app
 
-**New UI App (Recommended):**
+**Backend + Web UI (Recommended):**
 ```bash
-streamlit run app.py
+./start_backend.sh
 ```
 
-**Legacy App:**
+Open: `http://localhost:8080`
+
+**Streamlit app (optional):**
 ```bash
-streamlit run rag_scrapper.py
+streamlit run app.py
 ```
 
 ## Usage
@@ -364,14 +366,23 @@ The answer is strongly supported by retrieved context.
 ## Project Structure
 
 ```
-├── rag_scrapper.py          # Main application with RAG + hallucination detection
-├── requirements.txt         # Python dependencies
+├── server.py               # Flask backend + SSE streaming endpoints
+├── static/index.html       # Web UI served by Flask
+├── app.py                  # Streamlit version of the app
+├── config.py               # Runtime/model configuration
+├── start_backend.sh        # Local backend startup helper
+├── Dockerfile              # Container image for rag-app service
+├── docker-compose.yml      # Multi-service stack (rag-app + ollama + init)
+├── init-ollama.sh          # One-time Ollama model bootstrap script
+├── .env.example            # Environment variable template
+├── .dockerignore           # Docker build ignore patterns
+├── requirements.txt        # Python dependencies
 ├── README.md               # Project documentation
+├── DockerPlan.md           # Docker containerization plan
 ├── plan.md                 # Hallucination detection implementation plan
-├── DockerPlan.md          # Docker containerization guide
-├── cleanup.sh             # Utility script
-└── Flow_of_rag/           # Documentation folder
-    └── document-export-08-03-2026-16_48_09.md
+├── cleanup.sh              # Utility script
+└── Flow_of_rag/            # Documentation folder
+   └── document-export-08-03-2026-16_48_09.md
 ```
 
 ## Tech Stack
@@ -450,15 +461,55 @@ For containerized deployment instructions, see [DockerPlan.md](DockerPlan.md).
 
 Quick start with Docker:
 ```bash
-# Build image
-docker build -t rag-assistant .
+# Create env file from template
+cp .env.example .env
 
-# Run container
-docker run -p 8501:8501 \
-  -e SERPAPI_API_KEY=your_key \
-  -e PINECONE_API_KEY=your_key \
-  rag-assistant
+# Add your API keys to .env, then start backend container
+# (default uses host Ollama at http://host.docker.internal:11434)
+docker compose up -d --build
+
+# Check service status
+docker compose ps
+
+# Tail logs
+docker compose logs -f rag-app
+
+# App URL
+# http://localhost:8080
 ```
+
+### Docker Services
+
+- `rag-app`: Flask API + static frontend on port `8080`
+- `ollama` (optional): Local model runtime on port `11434` (profile: `with-ollama`)
+- `ollama-init` (optional): Pulls `nomic-embed-text` and `llama3.2:1b` once (profile: `with-ollama`)
+
+### Common Docker Commands
+
+```bash
+# Start/rebuild services
+docker compose up -d --build
+
+# Start with Docker-managed Ollama too (optional)
+docker compose --profile with-ollama up -d --build
+
+# Stop services
+docker compose down
+
+# Stop and remove Ollama model cache volume
+docker compose down -v
+
+# Verify models inside the Docker Ollama service
+docker compose --profile with-ollama exec ollama ollama list
+```
+
+### Docker Notes
+
+- Use `docker compose up -d --build` (not `docker compose up -d build`).
+- Use `docker compose ...` (not `docker up ...`).
+- Default compose run does not pull `ollama/ollama` images.
+- Host Ollama models and Docker Ollama models are separate stores.
+- Docker models are persisted in the `ollama-data` volume and reused across restarts.
 
 ## Future Enhancements
 

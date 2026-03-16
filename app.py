@@ -54,8 +54,9 @@ FAST_TYPEWRITER_DELAY = 0.004  # Faster for longer texts
 
 # ==================== CONFIGURATION ==
 
-SERPAPI_API_KEY = "3b5e8c37d4769cf12f42df01df5baa17f207836ee859d08f62d66607cd06cfb4"
-PINECONE_API_KEY = "pcsk_4EeaiW_PxmXpizoWmimbi8q9Cn3NTEMQJK9Xz14epbTWVwJGyWbyRp6cQy5BeEuE3AP9ws"
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 os.environ["SERPAPI_API_KEY"] = SERPAPI_API_KEY
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
@@ -81,19 +82,35 @@ CONTENT_PREVIEW_LENGTH = 500  # Longer content previews
 @st.cache_resource
 def get_embeddings():
     """Initialize embeddings model."""
-    return OllamaEmbeddings(model=EMBEDDINGS_MODEL)
+    return OllamaEmbeddings(model=EMBEDDINGS_MODEL, base_url=OLLAMA_BASE_URL)
 
 
 @st.cache_resource
 def get_llm():
     """Initialize LLM for chat."""
-    return OllamaLLM(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
+    return OllamaLLM(model=LLM_MODEL, temperature=LLM_TEMPERATURE, base_url=OLLAMA_BASE_URL)
 
 
 @st.cache_resource
 def get_llm_rag():
     """Initialize LLM for RAG (lower temperature for accuracy)."""
-    return OllamaLLM(model=RAG_LLM_MODEL, temperature=RAG_TEMPERATURE)
+    return OllamaLLM(model=RAG_LLM_MODEL, temperature=RAG_TEMPERATURE, base_url=OLLAMA_BASE_URL)
+
+
+def validate_required_env_vars():
+    """Stop early with a clear message when required API keys are missing."""
+    missing = []
+    if not SERPAPI_API_KEY:
+        missing.append("SERPAPI_API_KEY")
+    if not PINECONE_API_KEY:
+        missing.append("PINECONE_API_KEY")
+    if missing:
+        st.error(
+            "Missing required environment variables: "
+            + ", ".join(missing)
+            + ". Set them in your shell or .env file before starting the app."
+        )
+        st.stop()
 
 
 @st.cache_resource
@@ -889,6 +906,8 @@ def main():
         st.session_state.current_step = 0  # 0=idle, 1=LLM, 2=Search, 3=Analyze, 4=Decision, 5=Complete
     if "step_status" not in st.session_state:
         st.session_state.step_status = "Ready"
+
+    validate_required_env_vars()
     
     # Initialize models
     embeddings = get_embeddings()

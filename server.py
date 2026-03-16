@@ -43,6 +43,7 @@ load_dotenv()
 
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 os.environ["SERPAPI_API_KEY"] = SERPAPI_API_KEY
 os.environ["PINECONE_API_KEY"] = PINECONE_API_KEY
 
@@ -67,22 +68,32 @@ _vector_store = None
 def get_embeddings():
     global _embeddings
     if _embeddings is None:
-        _embeddings = OllamaEmbeddings(model=EMBEDDINGS_MODEL)
+        _embeddings = OllamaEmbeddings(model=EMBEDDINGS_MODEL, base_url=OLLAMA_BASE_URL)
     return _embeddings
 
 
 def get_llm():
     global _llm
     if _llm is None:
-        _llm = OllamaLLM(model=LLM_MODEL, temperature=LLM_TEMPERATURE)
+        _llm = OllamaLLM(model=LLM_MODEL, temperature=LLM_TEMPERATURE, base_url=OLLAMA_BASE_URL)
     return _llm
 
 
 def get_llm_rag():
     global _llm_rag
     if _llm_rag is None:
-        _llm_rag = OllamaLLM(model=RAG_LLM_MODEL, temperature=RAG_TEMPERATURE)
+        _llm_rag = OllamaLLM(model=RAG_LLM_MODEL, temperature=RAG_TEMPERATURE, base_url=OLLAMA_BASE_URL)
     return _llm_rag
+
+
+def missing_required_env_vars():
+    """List required API keys that are currently missing."""
+    missing = []
+    if not SERPAPI_API_KEY:
+        missing.append("SERPAPI_API_KEY")
+    if not PINECONE_API_KEY:
+        missing.append("PINECONE_API_KEY")
+    return missing
 
 
 def get_vector_store():
@@ -360,6 +371,12 @@ def index():
     return response
 
 
+@app.route("/api/health", methods=["GET"])
+def health_check():
+    """Lightweight container health endpoint."""
+    return jsonify({"status": "ok"}), 200
+
+
 @app.after_request
 def add_no_cache_headers(response):
     if request.path.startswith("/static/"):
@@ -386,6 +403,10 @@ def chat_stream():
     question = request.args.get("q", "").strip()
     if not question:
         return jsonify({"error": "No question provided"}), 400
+
+    missing = missing_required_env_vars()
+    if missing:
+        return jsonify({"error": "Missing required environment variables", "missing": missing}), 500
 
     def event(kind: str, payload: dict) -> str:
         return f"data: {json.dumps({'type': kind, **payload})}\n\n"
