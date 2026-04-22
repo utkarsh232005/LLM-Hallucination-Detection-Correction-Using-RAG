@@ -1,0 +1,1955 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAG Hallucination Detector</title>
+    <link rel="icon" type="image/x-icon" href="public/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="public/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="public/favicon-16x16.png" />
+    <link rel="apple-touch-icon" href="public/apple-touch-icon.png" />
+    <link rel="manifest" href="public/site.webmanifest" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.halo.min.js"></script>
+    <style>
+        /* ── reset & tokens ───────────────────────────────────────────────────── */
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg-app: #f4f6fa;
+            --bg-sidebar: #ffffff;
+            --bg-panel: #f9fafc;
+            --bg-input: #f0f2f7;
+            --bg-bubble-user: #2f6df5;
+            --bg-bubble-llm: #ffffff;
+            --bg-bubble-rag: #eaf6ea;
+            --border: #dde1ea;
+            --text-main: #1a1d27;
+            --text-muted: #6b7280;
+            --text-label: #374151;
+            --accent: #2f6df5;
+            --green: #16a34a;
+            --orange: #d97706;
+            --red: #dc2626;
+            --yellow: #ca8a04;
+            --radius-sm: 8px;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+            --font: 'Inter', system-ui, -apple-system, sans-serif;
+            --sidebar-w: 280px;
+            --panel-w: 560px;
+        }
+
+        html,
+        body {
+            height: 100%;
+            overflow: hidden;
+            font-size: 16px;
+        }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg-app);
+            color: var(--text-main);
+            display: flex;
+            height: 100vh;
+        }
+
+        /* ── scrollbar ─────────────────────────────────────────────────────────── */
+        ::-webkit-scrollbar {
+            width: 5px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #c5cad6;
+            border-radius: 3px;
+        }
+
+        /* ── sidebar ────────────────────────────────────────────────────────────── */
+        #sidebar {
+            width: var(--sidebar-w);
+            min-width: var(--sidebar-w);
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            padding: 16px 12px;
+            gap: 12px;
+            overflow-y: auto;
+            transition: width .3s;
+        }
+
+        .sidebar-logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 6px 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .sidebar-logo .logo-icon {
+            width: 34px;
+            height: 34px;
+            background: var(--accent);
+            border-radius: 10px;
+            display: grid;
+            place-items: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .sidebar-logo .logo-text {
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .sidebar-logo .logo-sub {
+            font-size: 10px;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        #new-chat-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 10px 14px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 13px;
+            font-family: var(--font);
+            transition: background .15s;
+        }
+
+        #new-chat-btn:hover {
+            background: #e5e8f0;
+        }
+
+        .sidebar-section-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            padding: 0 4px;
+        }
+
+        #history-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .history-item {
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            color: var(--text-label);
+            cursor: pointer;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            transition: background .15s;
+        }
+
+        .history-item:hover {
+            background: var(--bg-input);
+        }
+
+        .history-item.active {
+            background: #dce8ff;
+            color: var(--accent);
+        }
+
+        .sidebar-divider {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 4px 0;
+        }
+
+        .model-badge {
+            margin-top: auto;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 10px 12px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .model-badge strong {
+            color: var(--text-label);
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .model-tag {
+            display: inline-block;
+            padding: 2px 7px;
+            background: #e0eaff;
+            color: #2f6df5;
+            border-radius: 20px;
+            font-size: 11px;
+            margin-top: 3px;
+        }
+
+        /* ── main ─────────────────────────────────────────────────────────────── */
+        #main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── top bar ────────────────────────────────────────────────────────────── */
+        #topbar {
+            height: 52px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            flex-shrink: 0;
+            background: var(--bg-sidebar);
+        }
+
+        #topbar h1 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        #topbar .subtitle {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        /* ── split body ─────────────────────────────────────────────────────────── */
+        #split-body {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        /* ── chat column ────────────────────────────────────────────────────────── */
+        #chat-col {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border-right: 1px solid var(--border);
+            min-height: 0;
+        }
+
+        #chat-col-header {
+            padding: 12px 20px 10px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            flex-shrink: 0;
+        }
+
+        #messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* welcome screen */
+        .welcome {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            gap: 16px;
+            color: var(--text-muted);
+            text-align: center;
+            padding: 40px;
+        }
+
+        .welcome .wicon {
+            font-size: 48px;
+            line-height: 1;
+        }
+
+        .welcome h2 {
+            font-size: 20px;
+            color: var(--text-main);
+        }
+
+        .welcome p {
+            font-size: 13px;
+            max-width: 360px;
+            line-height: 1.6;
+        }
+
+        /* messages */
+        .msg-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+        }
+
+        .msg-row.user {
+            flex-direction: row-reverse;
+        }
+
+        .avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: grid;
+            place-items: center;
+            font-size: 15px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .avatar.user-av {
+            background: var(--accent);
+        }
+
+        .avatar.llm-av {
+            background: #e8eaf0;
+            border: 1px solid var(--border);
+        }
+
+        .avatar.rag-av {
+            background: #d1fae5;
+            border: 1px solid #86efac;
+        }
+
+        .bubble {
+            max-width: 72%;
+            padding: 13px 16px;
+            border-radius: var(--radius-md);
+            font-size: 15px;
+            line-height: 1.7;
+            position: relative;
+        }
+
+        .msg-row.user .bubble {
+            background: var(--bg-bubble-user);
+            border-radius: var(--radius-md) var(--radius-md) 4px var(--radius-md);
+            color: #fff;
+        }
+
+        .msg-row.assistant .bubble {
+            background: var(--bg-bubble-llm);
+            border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
+            border: 1px solid var(--border);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, .06);
+        }
+
+        .msg-row.rag .bubble {
+            background: var(--bg-bubble-rag);
+            border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
+            border: 1px solid #86efac;
+        }
+
+        .bubble-label {
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: .06em;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+
+        .msg-row.rag .bubble-label {
+            color: #15803d;
+        }
+
+        .msg-row.user .bubble-label {
+            display: none;
+        }
+
+        /* shimmer */
+        .shimmer-text {
+            background: linear-gradient(90deg, #9ca3af 20%, #374151 50%, #9ca3af 80%);
+            background-size: 300% 100%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: shimmer 1.5s linear infinite;
+            font-style: italic;
+        }
+
+        @keyframes shimmer {
+            0% {
+                background-position: 300% 0;
+            }
+
+            100% {
+                background-position: -300% 0;
+            }
+        }
+
+        /* typing cursor */
+        .typing-cursor::after {
+            content: '▌';
+            animation: blink .75s steps(1) infinite;
+            color: var(--accent);
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0;
+            }
+        }
+
+        /* ── input bar ──────────────────────────────────────────────────────────── */
+        #input-area {
+            padding: 14px 20px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-sidebar);
+            flex-shrink: 0;
+        }
+
+        #input-form {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 10px 14px;
+            transition: border-color .2s;
+        }
+
+        #input-form:focus-within {
+            border-color: var(--accent);
+        }
+
+        #question-input {
+            flex: 1;
+            background: none;
+            border: none;
+            outline: none;
+            color: var(--text-main);
+            font-family: var(--font);
+            font-size: 15px;
+            line-height: 1.5;
+            resize: none;
+            max-height: 180px;
+            min-height: 24px;
+            overflow-y: auto;
+        }
+
+        #question-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        #send-btn {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: var(--accent);
+            border: none;
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+            flex-shrink: 0;
+            transition: opacity .2s, background .2s;
+            color: #fff;
+            font-size: 16px;
+        }
+
+        #send-btn:disabled {
+            opacity: .4;
+            cursor: not-allowed;
+        }
+
+        #send-btn:not(:disabled):hover {
+            background: #3b7af8;
+        }
+
+        /* ── analysis panel ─────────────────────────────────────────────────────── */
+        #analysis-panel {
+            width: var(--panel-w);
+            min-width: var(--panel-w);
+            max-width: var(--panel-w);
+            background: var(--bg-panel);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .panel-header {
+            padding: 12px 16px 10px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .panel-header .ph-badge {
+            font-size: 10px;
+            padding: 2px 8px;
+            background: var(--bg-input);
+            border-radius: 20px;
+            color: var(--text-muted);
+            font-weight: 400;
+            letter-spacing: 0;
+            text-transform: none;
+        }
+
+        #panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            min-height: 0;
+            padding-bottom: 56px;
+            overscroll-behavior: contain;
+        }
+
+        /* steps */
+        #steps-section {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .step-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 9px 11px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-input);
+            border-left: 3px solid var(--border);
+            font-size: 13px;
+            color: var(--text-muted);
+            transition: border-color .3s, color .3s;
+        }
+
+        .step-item.running {
+            border-left-color: var(--orange);
+            color: var(--text-main);
+            animation: pulse 1.4s ease-in-out infinite;
+        }
+
+        .step-item.complete {
+            border-left-color: var(--green);
+            color: var(--text-main);
+        }
+
+        .step-item.pending {
+            opacity: .5;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: .7;
+            }
+
+            50% {
+                opacity: 1;
+            }
+        }
+
+        .step-num {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--border);
+            display: grid;
+            place-items: center;
+            font-size: 10px;
+            font-weight: 700;
+            flex-shrink: 0;
+            color: var(--text-muted);
+        }
+
+        .step-item.running .step-num {
+            background: var(--orange);
+            color: #000;
+        }
+
+        .step-item.complete .step-num {
+            background: var(--green);
+            color: #000;
+        }
+
+        .step-label {
+            flex: 1;
+            line-height: 1.4;
+        }
+
+        /* hallucination card */
+        .section-card {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            min-height: 180px;
+        }
+
+        .card-title {
+            padding: 12px 16px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border);
+            background: #eef1f8;
+        }
+
+        .card-body {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        /* confidence ring */
+        .confidence-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .ring-wrap {
+            position: relative;
+            width: 72px;
+            height: 72px;
+            flex-shrink: 0;
+        }
+
+        .ring-wrap svg {
+            transform: rotate(-90deg);
+        }
+
+        .ring-bg {
+            fill: none;
+            stroke: #dde1ea;
+            stroke-width: 8;
+        }
+
+        .ring-fill {
+            fill: none;
+            stroke-width: 8;
+            stroke-linecap: round;
+            transition: stroke-dashoffset .8s ease, stroke .4s;
+        }
+
+        .ring-text {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .ring-text small {
+            font-size: 9px;
+            font-weight: 400;
+            color: var(--text-muted);
+            margin-top: 1px;
+        }
+
+        .conf-details {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .conf-class {
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .05em;
+        }
+
+        .conf-verdict {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .exam-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .exam-metric {
+            background: #f0f2f7;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px;
+            min-height: 58px;
+        }
+
+        .exam-metric .label {
+            font-size: 9px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: .05em;
+        }
+
+        .exam-metric .value {
+            margin-top: 5px;
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-main);
+            line-height: 1;
+        }
+
+        .exam-metric .hint {
+            margin-top: 3px;
+            font-size: 9px;
+            color: var(--text-muted);
+        }
+
+        /* meter bar */
+        .meter-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .meter-track {
+            height: 8px;
+            border-radius: 4px;
+            background: #dde1ea;
+            overflow: hidden;
+        }
+
+        .meter-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width .8s ease, background .4s;
+        }
+
+        /* sentence rows */
+        .sentence-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 13px;
+            line-height: 1.5;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .sentence-row:last-child {
+            border-bottom: none;
+        }
+
+        .sent-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+
+        .sent-text {
+            flex: 1;
+            color: var(--text-label);
+        }
+
+        .sent-pct {
+            font-weight: 700;
+            flex-shrink: 0;
+            font-size: 10px;
+        }
+
+        /* verdict banner */
+        .verdict-banner {
+            border-radius: var(--radius-sm);
+            padding: 10px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .verdict-banner.ok {
+            background: #dcfce7;
+            border: 1px solid #86efac;
+            color: var(--green);
+        }
+
+        .verdict-banner.warn {
+            background: #fef9c3;
+            border: 1px solid #fde047;
+            color: var(--orange);
+        }
+
+        .verdict-banner.bad {
+            background: #fee2e2;
+            border: 1px solid #fca5a5;
+            color: var(--red);
+        }
+
+        /* sources */
+        .source-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 12px;
+            padding: 9px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .source-item:last-child {
+            border-bottom: none;
+        }
+
+        .source-num {
+            width: 18px;
+            height: 18px;
+            border-radius: 4px;
+            background: #e0eaff;
+            color: #2f6df5;
+            display: grid;
+            place-items: center;
+            font-size: 9px;
+            font-weight: 700;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .source-link {
+            color: #2563eb;
+            text-decoration: none;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .source-link:hover {
+            text-decoration: underline;
+        }
+
+        /* summary */
+        .summary-box {
+            background: #f8f9fc;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 11px 13px;
+            font-size: 13px;
+            line-height: 1.7;
+            color: var(--text-label);
+            min-height: 260px;
+            max-height: none;
+            overflow: visible;
+        }
+
+        .context-box {
+            background: #f8f9fc;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 11px 13px;
+            font-size: 12px;
+            line-height: 1.6;
+            color: var(--text-label);
+            min-height: 340px;
+            max-height: none;
+            overflow: visible;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        #hall-card {
+            min-height: 340px;
+        }
+
+        #sources-card {
+            min-height: 240px;
+        }
+
+        #summary-card {
+            min-height: 320px;
+        }
+
+        #context-card {
+            min-height: 420px;
+        }
+
+        #token-card {
+            min-height: 240px;
+        }
+
+        /* tokens */
+        .token-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .token {
+            padding: 2px 7px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 500;
+        }
+
+        .token.matched {
+            background: #dcfce7;
+            color: #15803d;
+        }
+
+        .token.unmatched {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+
+        /* empty panel */
+        .panel-empty {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            gap: 12px;
+            text-align: center;
+            padding: 40px 24px;
+        }
+
+        .panel-empty .ei {
+            font-size: 36px;
+        }
+
+        .panel-empty p {
+            font-size: 12px;
+            line-height: 1.6;
+            max-width: 260px;
+        }
+
+        /* ── responsive ──────────────────────────────────────────────────────────── */
+        @media (max-width: 900px) {
+            #sidebar {
+                display: none;
+            }
+
+            #analysis-panel {
+                display: none;
+            }
+        }
+
+        /* ── Welcome Screen ──────────────────────────────── */
+        #welcome-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            background: linear-gradient(145deg, #eef2ff 0%, #f0f9ff 45%, #ecfdf5 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px 48px;
+            overflow: hidden;
+            transition: opacity .6s ease, transform .6s ease;
+        }
+        #welcome-overlay::before {
+            content: '';
+            position: absolute;
+            top: -160px; right: -120px;
+            width: 420px; height: 420px;
+            background: radial-gradient(circle, #a5b4fc, #60a5fa);
+            border-radius: 50%;
+            filter: blur(80px);
+            opacity: .2;
+            animation: float-orb 7s ease-in-out infinite alternate;
+            pointer-events: none;
+        }
+        #welcome-overlay::after {
+            content: '';
+            position: absolute;
+            bottom: -140px; left: -100px;
+            width: 340px; height: 340px;
+            background: radial-gradient(circle, #6ee7b7, #34d399);
+            border-radius: 50%;
+            filter: blur(70px);
+            opacity: .2;
+            animation: float-orb 7s ease-in-out infinite alternate-reverse;
+            pointer-events: none;
+        }
+        @keyframes float-orb {
+            from { transform: translate(0, 0) scale(1); }
+            to   { transform: translate(24px, 16px) scale(1.07); }
+        }
+        #welcome-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: scale(1.04);
+        }
+
+        /* two-column layout */
+        .ws-inner {
+            position: relative;
+            z-index: 100;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 48px;
+            align-items: center;
+            max-width: 1200px;
+            width: 100%;
+            animation: ws-rise .5s ease both;
+            text-rendering: optimizeLegibility;
+        }
+        @keyframes ws-rise {
+            from { opacity: 0; transform: translateY(20px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        /* left column */
+        .ws-left {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 16px;
+        }
+        .ws-badge {
+            background: rgba(255,255,255,.8);
+            backdrop-filter: blur(6px);
+            border: 1.5px solid #c7d7fd;
+            color: #2f6df5;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 5px 16px;
+            border-radius: 40px;
+            letter-spacing: .04em;
+            display: none;
+        }
+        .ws-logo {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .ws-icon { 
+            font-size: 80px; 
+            animation: icon-bob 3s ease-in-out infinite;
+            filter: drop-shadow(0 0 20px rgba(255,255,255,.3));
+        }
+        @keyframes icon-bob {
+            0%,100% { transform: translateY(0); }
+            50%      { transform: translateY(-7px); }
+        }
+        .ws-logo h1 {
+            font-size: 128px;
+            font-weight: 900;
+            letter-spacing: -2px;
+            line-height: 1;
+            color: #fff;
+            background: linear-gradient(135deg, #fff, #e0f2fe, #bfdbfe);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 0 30px rgba(255,255,255,.4);
+            filter: drop-shadow(0 4px 16px rgba(47,109,245,.3));
+        }
+        .ws-sub {
+            font-size: 32px;
+            font-weight: 500;
+            color: #e0f2fe;
+            line-height: 1.6;
+            max-width: 500px;
+            text-shadow: 0 2px 12px rgba(0,0,0,.4);
+        }
+        .ws-pills {
+            display: none;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .ws-pill {
+            background: rgba(255,255,255,.75);
+            border: 1px solid #dde1ea;
+            border-radius: 20px;
+            padding: 4px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #374151;
+            animation: pill-fade-in 0.6s ease-out forwards;
+        }
+        
+        .ws-pill:nth-child(1) { animation-delay: 0.1s; }
+        .ws-pill:nth-child(2) { animation-delay: 0.2s; }
+        .ws-pill:nth-child(3) { animation-delay: 0.3s; }
+        .ws-pill:nth-child(4) { animation-delay: 0.4s; }
+        
+        @keyframes pill-fade-in {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        #ws-start-btn {
+            position: relative;
+            background: linear-gradient(135deg, #06b6d4, #0ea5e9);
+            color: #fff;
+            border: 2px solid rgba(255,255,255,.3);
+            border-radius: 50px;
+            padding: 22px 60px;
+            font-size: 24px;
+            font-weight: 800;
+            font-family: var(--font);
+            cursor: pointer;
+            letter-spacing: .02em;
+            box-shadow: 0 8px 32px rgba(6,182,212,.6);
+            transition: transform .15s, box-shadow .15s;
+            margin-top: 12px;
+            animation: button-bounce-in 0.7s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        
+        @keyframes button-bounce-in {
+            from {
+                opacity: 0;
+                transform: scale(0.9) translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+        #ws-start-btn::before {
+            content: '';
+            position: absolute;
+            inset: -5px;
+            border-radius: 50px;
+            border: 2px solid rgba(47,109,245,.3);
+            animation: pulse-ring 2s ease infinite;
+        }
+        @keyframes pulse-ring {
+            0%  { transform: scale(1);    opacity: .6; }
+            70% { transform: scale(1.11); opacity: 0; }
+            100%{ transform: scale(1.11); opacity: 0; }
+        }
+        #ws-start-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 40px rgba(6,182,212,.8);
+        }
+        .ws-hint {
+            font-size: 11px;
+            color: #9ca3af;
+            display: none;
+        }
+
+        /* right column — feature cards */
+        .ws-right {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .ws-card {
+            background: rgba(255,255,255,.82);
+            backdrop-filter: blur(8px);
+            border: 1.5px solid rgba(221,225,234,.9);
+            border-radius: 14px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            box-shadow: 0 3px 14px rgba(47,109,245,.06);
+            transition: transform .2s, box-shadow .2s;
+            animation: card-slide-up 0.6s ease-out forwards;
+        }
+        
+        .ws-right .ws-card:nth-child(1) { animation-delay: 0.2s; }
+        .ws-right .ws-card:nth-child(2) { animation-delay: 0.3s; }
+        .ws-right .ws-card:nth-child(3) { animation-delay: 0.4s; }
+        .ws-right .ws-card:nth-child(4) { animation-delay: 0.5s; }
+        
+        @keyframes card-slide-up {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .ws-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 15px 35px rgba(47,109,245,.15);
+        }
+        
+        .wc-icon {
+            font-size: 26px;
+            animation: icon-float 2s ease-in-out infinite;
+        }
+        
+        @keyframes icon-float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+        .wc-title { font-size: 20px; font-weight: 800; color: #1a1d27; text-shadow: 0 1px 3px rgba(0,0,0,.05); }
+        .wc-desc  { font-size: 16px; color: #4b5563; line-height: 1.6; text-shadow: 0 1px 3px rgba(0,0,0,.05); }
+
+    </style>
+</head>
+
+<body>
+
+    <!-- ══════════════════════════════════ WELCOME SCREEN ══ -->
+    <!-- ════════════════════ WELCOME SCREEN ══ -->
+    <div id="welcome-overlay">
+        <div class="ws-inner">
+
+            <!-- LEFT: branding + CTA -->
+            <div class="ws-left">
+                <div class="ws-badge">🚀 Powered by Llama · Pinecone · HuggingFace</div>
+                <div class="ws-logo">
+                    <span class="ws-icon">🎯</span>
+                    <h1>HalluRAG</h1>
+                </div>
+                <div class="ws-sub">LLM Hallucination Detection &amp; Correction Using RAG</div>
+                <div class="ws-pills">
+                    <span class="ws-pill">⚡ Real-Time SSE</span>
+                    <span class="ws-pill">🧠 NLI CrossEncoder</span>
+                    <span class="ws-pill">🗃️ MySQL Logs</span>
+                    <span class="ws-pill">🔍 4-Step Pipeline</span>
+                </div>
+                <button id="ws-start-btn" onclick="startApp()">Get Started →</button>
+                <div class="ws-hint">No login needed &nbsp;·&nbsp; Results logged automatically</div>
+            </div>
+
+            <!-- RIGHT: feature cards -->
+            <div class="ws-right">
+                <div class="ws-card">
+                    <div class="wc-icon">🧠</div>
+                    <div class="wc-title">LLM Response</div>
+                    <div class="wc-desc">Llama 3.2 generates an initial answer locally via Ollama.</div>
+                </div>
+                <div class="ws-card">
+                    <div class="wc-icon">🔍</div>
+                    <div class="wc-title">Web Verification</div>
+                    <div class="wc-desc">Live web scraping via SerpAPI, indexed in Pinecone VectorDB.</div>
+                </div>
+                <div class="ws-card">
+                    <div class="wc-icon">⚡</div>
+                    <div class="wc-title">NLI Detection</div>
+                    <div class="wc-desc">CrossEncoder scores each sentence: contradiction vs entailment.</div>
+                </div>
+                <div class="ws-card">
+                    <div class="wc-icon">✅</div>
+                    <div class="wc-title">RAG Correction</div>
+                    <div class="wc-desc">Hallucinated answers are replaced with verified RAG responses.</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════ SIDEBAR ══ -->
+    <aside id="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">🎯</div>
+            <div>
+                <div class="logo-text">HalluRAG</div>
+                <div class="logo-sub">Hallucination Detection System</div>
+            </div>
+        </div>
+
+        <button id="new-chat-btn" onclick="newChat()">
+            <span>✏️</span> New Chat
+        </button>
+
+        <div class="sidebar-section-label">Recent</div>
+        <div id="history-list">
+            <!-- populated by JS -->
+        </div>
+
+        <hr class="sidebar-divider" />
+
+        <div class="model-badge" id="model-badge">
+            <strong>Active Models</strong>
+            <div><span class="model-tag" id="llm-tag">llama3.2:1b</span> Chat</div>
+            <div><span class="model-tag" id="rag-tag">llama3.2:1b</span> RAG</div>
+            <div><span class="model-tag" id="emb-tag">nomic-embed-text</span> Embed</div>
+        </div>
+    </aside>
+
+    <!-- ══════════════════════════════════════════════════════ MAIN ══════ -->
+    <main id="main">
+
+        <div id="topbar">
+            <div>
+                <div id="topbar-title" style="font-size:14px;font-weight:600;">LLM Hallucination Detection & Correction
+                    Using RAG</div>
+                <div class="subtitle">LLM responses verified in real-time · RAG correction on hallucination</div>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);" id="status-label">Ready</div>
+        </div>
+
+        <div id="split-body">
+
+            <!-- ─── Chat Column ────────────────────────────────────────────── -->
+            <div id="chat-col">
+                <div id="chat-col-header">💬 Chat</div>
+
+                <div id="messages">
+                    <div class="welcome" id="welcome-screen">
+                        <div class="wicon">🎯</div>
+                        <h2>Hallucination Detection RAG</h2>
+                        <p>Ask anything. Your question goes to Llama, then the response is verified against live web
+                            sources. If hallucination is detected, RAG provides a corrected answer automatically.</p>
+                    </div>
+                </div>
+
+                <div id="input-area">
+                    <form id="input-form" onsubmit="return false;">
+                        <textarea id="question-input" placeholder="Ask anything…" rows="1" onkeydown="handleKey(event)"
+                            oninput="autoResize(this)"></textarea>
+                        <button type="button" id="send-btn" onclick="sendMessage()" title="Send (Enter)">
+                            ↑
+                        </button>
+                    </form>
+                    <div style="text-align:center;font-size:10px;color:var(--text-muted);margin-top:8px;">
+                        RAG Hallucination Detector · Powered by Ollama + Pinecone
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── Analysis Panel ─────────────────────────────────────────── -->
+            <div id="analysis-panel">
+                <div class="panel-header">
+                    🔬 Analysis
+                    <span class="ph-badge" id="panel-badge">Waiting for query</span>
+                </div>
+
+                <div id="panel-body">
+                    <div class="panel-empty" id="panel-empty">
+                        <div class="ei">📊</div>
+                        <p>Hallucination detection report, step indicators, and RAG sources will appear here after you
+                            send a message.</p>
+                    </div>
+
+                    <!-- Steps -->
+                    <div id="steps-section" style="display:none;">
+                        <div id="step1" class="step-item pending">
+                            <div class="step-num">1</div>
+                            <div class="step-label">Generate LLM response</div>
+                        </div>
+                        <div id="step2" class="step-item pending">
+                            <div class="step-num">2</div>
+                            <div class="step-label">Search & index web sources</div>
+                        </div>
+                        <div id="step3" class="step-item pending">
+                            <div class="step-num">3</div>
+                            <div class="step-label">Detect hallucination</div>
+                        </div>
+                        <div id="step4" class="step-item pending">
+                            <div class="step-num">4</div>
+                            <div class="step-label">Decision & final response</div>
+                        </div>
+                    </div>
+
+                    <!-- Hallucination Report -->
+                    <div class="section-card" id="hall-card" style="display:none;">
+                        <div class="card-title">🎯 Hallucination Report</div>
+                        <div class="card-body">
+                            <div class="confidence-row">
+                                <div class="ring-wrap">
+                                    <svg viewBox="0 0 72 72" width="72" height="72">
+                                        <circle class="ring-bg" cx="36" cy="36" r="30" />
+                                        <circle class="ring-fill" id="ring-fill" cx="36" cy="36" r="30"
+                                            stroke-dasharray="188.5" stroke-dashoffset="188.5" stroke="#ef4444" />
+                                    </svg>
+                                    <div class="ring-text">
+                                        <span id="ring-pct">0%</span>
+                                        <small>HALL.</small>
+                                    </div>
+                                </div>
+                                <div class="conf-details">
+                                    <div class="conf-class" id="conf-class">—</div>
+                                    <div class="conf-verdict" id="conf-verdict">Waiting for analysis</div>
+                                    <br />
+                                    <div class="meter-label">Hallucination level</div>
+                                    <div class="meter-track">
+                                        <div class="meter-fill" id="meter-fill"
+                                            style="width:0%;background:var(--green);"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="exam-metrics">
+                                <div class="exam-metric">
+                                    <div class="label">Evidence Support</div>
+                                    <div class="value" id="support-pct">0%</div>
+                                    <div class="hint">token match ratio</div>
+                                </div>
+                                <div class="exam-metric">
+                                    <div class="label">Sentences</div>
+                                    <div class="value" id="sentence-count">0</div>
+                                    <div class="hint">evaluated statements</div>
+                                </div>
+                                <div class="exam-metric">
+                                    <div class="label">Unsupported Terms</div>
+                                    <div class="value" id="unsupported-count">0</div>
+                                    <div class="hint">needs correction</div>
+                                </div>
+                                <div class="exam-metric">
+                                    <div class="label">Sources</div>
+                                    <div class="value" id="source-count">0</div>
+                                    <div class="hint">web links fetched</div>
+                                </div>
+                                <div class="exam-metric">
+                                    <div class="label">Retrieved Chunks</div>
+                                    <div class="value" id="chunk-count">0</div>
+                                    <div class="hint">vector matches</div>
+                                </div>
+                                <div class="exam-metric">
+                                    <div class="label">Analyzed Chunks</div>
+                                    <div class="value" id="analyzed-count">0</div>
+                                    <div class="hint">used for scoring</div>
+                                </div>
+                            </div>
+                            <div id="sentence-analysis" style="display:none;">
+                                <div class="card-title" style="margin: 0 -14px; padding: 8px 14px; font-size:10px;">
+                                    Sentence Analysis</div>
+                                <div id="sentence-list"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Verdict -->
+                    <div id="verdict-banner" style="display:none;"></div>
+
+                    <!-- Sources -->
+                    <div class="section-card" id="sources-card" style="display:none;">
+                        <div class="card-title">🔗 Sources</div>
+                        <div class="card-body" id="sources-list" style="gap:0;"></div>
+                    </div>
+
+                    <!-- RAG Summary -->
+                    <div class="section-card" id="summary-card" style="display:none;">
+                        <div class="card-title">📝 RAG Context Summary</div>
+                        <div class="card-body">
+                            <div class="summary-box" id="summary-text"></div>
+                        </div>
+                    </div>
+
+                    <!-- Raw Retrieved Context -->
+                    <div class="section-card" id="context-card" style="display:none;">
+                        <div class="card-title">📚 Retrieved Context (Vector DB)</div>
+                        <div class="card-body">
+                            <div class="context-box" id="context-text"></div>
+                        </div>
+                    </div>
+
+                    <!-- Token Analysis -->
+                    <div class="section-card" id="token-card" style="display:none;">
+                        <div class="card-title">🔤 Token Support</div>
+                        <div class="card-body">
+                            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Verified tokens</div>
+                            <div class="token-list" id="matched-tokens"></div>
+                            <div style="font-size:11px;color:var(--text-muted);margin:8px 0 6px;">Unsupported tokens
+                            </div>
+                            <div class="token-list" id="unmatched-tokens"></div>
+                        </div>
+                    </div>
+
+                </div><!-- /panel-body -->
+            </div><!-- /analysis-panel -->
+
+        </div><!-- /split-body -->
+    </main>
+
+    <script>
+        // ── state ─────────────────────────────────────────────────────────────────────
+        let chatHistory = [];   // [{role, content, type}]
+        let historyItems = [];   // [{title, messages}]
+        let currentEventSource = null;
+        let isStreaming = false;
+        const API_BASE = (() => {
+            const explicit = (window.API_BASE_URL || window.__API_BASE_URL__ || '').trim();
+            if (explicit) return explicit.replace(/\/$/, '');
+            if (location.protocol === 'file:' || location.port === '5500') return 'http://127.0.0.1:8080';
+            return '';
+        })();
+
+        function apiUrl(path) {
+            return `${API_BASE}${path}`;
+        }
+
+        // ── boot ──────────────────────────────────────────────────────────────────────
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchModels();
+            const ta = document.getElementById('question-input');
+            ta.addEventListener('input', () => autoResize(ta));
+        });
+
+        function fetchModels() {
+            fetch(apiUrl('/api/models')).then(r => r.json()).then(d => {
+                document.getElementById('llm-tag').textContent = d.llm || 'llama3.2:1b';
+                document.getElementById('rag-tag').textContent = d.rag || 'llama3.2:1b';
+                document.getElementById('emb-tag').textContent = d.embeddings || 'nomic-embed-text';
+            }).catch(() => { });
+        }
+
+        // ── textarea auto-resize ──────────────────────────────────────────────────────
+        function autoResize(el) {
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 180) + 'px';
+        }
+
+        function handleKey(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        }
+
+        // ── new chat ──────────────────────────────────────────────────────────────────
+        function startApp() {
+            const ws = document.getElementById('welcome-overlay');
+            if (ws) {
+                ws.classList.add('hidden');
+                // remove from DOM after fade completes so it doesn't block interactions
+                setTimeout(() => ws.remove(), 650);
+            }
+        }
+
+        function newChat() {
+            if (chatHistory.length > 0) {
+                const title = chatHistory.find(m => m.role === 'user')?.content?.slice(0, 50) || 'Chat';
+                historyItems.unshift({ title, messages: [...chatHistory] });
+                renderHistory();
+            }
+            chatHistory = [];
+            const msgs = document.getElementById('messages');
+            msgs.innerHTML = `
+    <div class="welcome" id="welcome-screen">
+      <div class="wicon">🎯</div>
+      <h2>Hallucination Detection RAG</h2>
+      <p>Ask anything. Your question goes to Llama, then the response is verified against live web sources.</p>
+    </div>`;
+            resetPanel();
+            document.getElementById('question-input').value = '';
+            document.getElementById('topbar-title').textContent = 'Hallucination Detection RAG';
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('history-list');
+            list.innerHTML = historyItems.slice(0, 20).map((item, i) => `
+    <div class="history-item" onclick="loadHistory(${i})">${escHtml(item.title)}</div>
+  `).join('');
+        }
+
+        function loadHistory(i) {
+            document.querySelectorAll('.history-item').forEach((el, j) => {
+                el.classList.toggle('active', i === j);
+            });
+        }
+
+        // ── send message ──────────────────────────────────────────────────────────────
+        function sendMessage() {
+            const input = document.getElementById('question-input');
+            const q = input.value.trim();
+            if (!q || isStreaming) return;
+
+            // Remove welcome
+            document.getElementById('welcome-screen')?.remove();
+
+            // add user bubble
+            appendMessage('user', q);
+            chatHistory.push({ role: 'user', content: q });
+
+            input.value = '';
+            input.style.height = 'auto';
+            document.getElementById('send-btn').disabled = true;
+            document.getElementById('topbar-title').textContent = q.slice(0, 60) + (q.length > 60 ? '…' : '');
+            setStatus('Processing…');
+
+            // Reset panel, show steps
+            resetPanel(true);
+
+            startStream(q);
+        }
+
+        function startStream(question) {
+            isStreaming = true;
+
+            if (currentEventSource) { currentEventSource.close(); }
+
+            // Add shimmer LLM bubble
+            const llmId = 'msg-llm-' + Date.now();
+            appendMessage('assistant', '<span class="shimmer-text">Generating response…</span>', llmId);
+
+            const url = `${apiUrl('/api/chat/stream')}?q=${encodeURIComponent(question)}`;
+            const es = new EventSource(url);
+            currentEventSource = es;
+
+            let llmText = '';
+            let llmTyped = false;
+
+            es.onmessage = async (e) => {
+                let data;
+                try { data = JSON.parse(e.data); } catch { return; }
+
+                switch (data.type) {
+
+                    case 'step':
+                        updateStep(data.step, data.label, data.status);
+                        setStatus(data.label);
+                        break;
+
+                    case 'llm':
+                        llmText = data.text;
+                        if (!llmTyped) {
+                            await typewriterBubble(llmId, data.text, 'assistant', 9);
+                            llmTyped = true;
+                        } else {
+                            updateBubble(llmId, data.text, 'assistant');
+                        }
+                        break;
+
+                    case 'analysis':
+                        updateAnalysisPanel(data);
+                        break;
+
+                    case 'rag':
+                        if (data.is_hallucinated) {
+                            // replace shimmer bubble with final RAG bubble
+                            removeBubble(llmId);
+                            // show rejected LLM bubble in grey smaller
+                            appendMessage('assistant-rejected', data.llm_answer);
+                            const ragId = 'msg-rag-' + Date.now();
+                            appendMessage('rag', '<span class="shimmer-text">Generating corrected answer…</span>', ragId);
+                            await typewriterBubble(ragId, data.text, 'rag', 8);
+                        } else {
+                            // LLM answer is verified correct — just ensure the bubble
+                            // shows the final clean text (no shimmer, no overwrite if already typed)
+                            if (!llmTyped) {
+                                await typewriterBubble(llmId, data.text, 'assistant', 9);
+                                llmTyped = true;
+                            }
+                            // If already typed, leave it as-is — content is already correct
+                        }
+                        if (data.sources?.length) renderSources(data.sources);
+                        if (data.summary) renderSummary(data.summary);
+                        if (data.context_text) renderContext(data.context_text);
+                        break;
+
+                    case 'done':
+                        es.close();
+                        isStreaming = false;
+                        document.getElementById('send-btn').disabled = false;
+                        setStatus('Done ✓');
+                        scrollMessages();
+                        break;
+
+                    case 'error':
+                        es.close();
+                        isStreaming = false;
+                        document.getElementById('send-btn').disabled = false;
+                        appendMessage('error', '⚠ ' + data.message);
+                        setStatus('Error');
+                        break;
+                }
+            };
+
+            es.onerror = () => {
+                es.close();
+                isStreaming = false;
+                document.getElementById('send-btn').disabled = false;
+                setStatus('Connection error');
+            };
+        }
+
+        // ── DOM helpers ───────────────────────────────────────────────────────────────
+        function appendMessage(role, html, id) {
+            const msgs = document.getElementById('messages');
+            const row = document.createElement('div');
+            row.className = 'msg-row ' + (role === 'user' ? 'user' : role === 'rag' ? 'rag' : 'assistant');
+            if (id) row.id = id;
+
+            let avatarEmoji, avatarClass, label;
+            if (role === 'user') {
+                avatarEmoji = '👤'; avatarClass = 'user-av'; label = '';
+            } else if (role === 'rag') {
+                avatarEmoji = '🤖'; avatarClass = 'rag-av'; label = '🤖 RAG · Corrected Answer';
+            } else if (role === 'assistant-rejected') {
+                avatarEmoji = '🦙'; avatarClass = 'llm-av'; label = '🦙 Llama · Original (Rejected)';
+                row.className = 'msg-row assistant';
+                row.style.opacity = '.5';
+            } else {
+                avatarEmoji = '🦙'; avatarClass = 'llm-av'; label = '🦙 Llama';
+            }
+
+            row.innerHTML = `
+    <div class="avatar ${avatarClass}">${avatarEmoji}</div>
+    <div class="bubble">
+      ${label ? `<div class="bubble-label">${label}</div>` : ''}
+      <div class="bubble-content">${html}</div>
+    </div>`;
+            msgs.appendChild(row);
+            scrollMessages();
+            return row;
+        }
+
+        function updateBubble(id, text, role) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.className = 'msg-row ' + (role === 'rag' ? 'rag' : 'assistant');
+            const content = el.querySelector('.bubble-content');
+            if (content) content.innerHTML = escHtml(text).replace(/\n/g, '<br>');
+            const label = el.querySelector('.bubble-label');
+            if (label) label.textContent = role === 'rag' ? '🤖 RAG · Corrected Answer' : '🦙 Llama';
+            scrollMessages();
+        }
+
+        async function typewriterBubble(id, text, role, speed = 10) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.className = 'msg-row ' + (role === 'rag' ? 'rag' : 'assistant');
+            const content = el.querySelector('.bubble-content');
+            const label = el.querySelector('.bubble-label');
+            if (label) label.textContent = role === 'rag' ? '🤖 RAG · Corrected Answer' : '🦙 Llama';
+            if (!content) return;
+
+            const src = String(text || '');
+            let buffer = '';
+            for (let i = 0; i < src.length; i++) {
+                buffer += src[i];
+                content.innerHTML = escHtml(buffer).replace(/\n/g, '<br>') + '<span class="typing-cursor"></span>';
+                if (i % 2 === 0) {
+                    scrollMessages();
+                }
+                await new Promise(r => setTimeout(r, speed));
+            }
+            content.innerHTML = escHtml(src).replace(/\n/g, '<br>');
+            scrollMessages();
+        }
+
+        function removeBubble(id) {
+            document.getElementById(id)?.remove();
+        }
+
+        function scrollMessages() {
+            const msgs = document.getElementById('messages');
+            msgs.scrollTop = msgs.scrollHeight;
+        }
+
+        function setStatus(txt) {
+            document.getElementById('status-label').textContent = txt;
+        }
+
+        function escHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        // ── step indicators ───────────────────────────────────────────────────────────
+        function updateStep(num, label, status) {
+            const el = document.getElementById('step' + num);
+            if (!el) return;
+            el.className = 'step-item ' + status;
+            el.querySelector('.step-label').textContent = label;
+        }
+
+        // ── panel reset ───────────────────────────────────────────────────────────────
+        function resetPanel(showSteps = false) {
+            document.getElementById('panel-empty').style.display = showSteps ? 'none' : 'flex';
+            document.getElementById('steps-section').style.display = showSteps ? 'flex' : 'none';
+            document.getElementById('hall-card').style.display = 'none';
+            document.getElementById('verdict-banner').style.display = 'none';
+            document.getElementById('sources-card').style.display = 'none';
+            document.getElementById('summary-card').style.display = 'none';
+            document.getElementById('context-card').style.display = 'none';
+            document.getElementById('token-card').style.display = 'none';
+            document.getElementById('panel-badge').textContent = showSteps ? 'Processing…' : 'Waiting';
+            document.getElementById('sentence-analysis').style.display = 'none';
+            document.getElementById('sentence-list').innerHTML = '';
+            document.getElementById('sources-list').innerHTML = '';
+            document.getElementById('summary-text').textContent = '';
+            document.getElementById('matched-tokens').innerHTML = '';
+            document.getElementById('unmatched-tokens').innerHTML = '';
+            document.getElementById('context-text').textContent = '';
+            document.getElementById('support-pct').textContent = '0%';
+            document.getElementById('sentence-count').textContent = '0';
+            document.getElementById('unsupported-count').textContent = '0';
+            document.getElementById('source-count').textContent = '0';
+            document.getElementById('chunk-count').textContent = '0';
+            document.getElementById('analyzed-count').textContent = '0';
+            document.getElementById('ring-pct').textContent = '0%';
+            document.getElementById('meter-fill').style.width = '0%';
+
+            ['step1', 'step2', 'step3', 'step4'].forEach(id => {
+                const el = document.getElementById(id);
+                el.className = 'step-item pending';
+                const labels = {
+                    step1: 'Generate LLM response', step2: 'Search & index web sources',
+                    step3: 'Detect hallucination', step4: 'Decision & final response'
+                };
+                el.querySelector('.step-label').textContent = labels[id];
+            });
+        }
+
+        // ── analysis panel update ─────────────────────────────────────────────────────
+        function updateAnalysisPanel(data) {
+            const confidence = data.confidence || 0;
+            const hallPct = Math.round(100 - confidence);
+            const isHall = data.is_hallucinated;
+            const cls = data.classification || '—';
+            const sentences = data.sentence_scores || [];
+            const tokAn = data.token_analysis || {};
+            const metadata = data.metadata || {};
+            const supportPct = Number(tokAn.support_pct || 0);
+            const unsupportedCount = (tokAn.unmatched || []).length;
+
+            document.getElementById('panel-badge').textContent = cls;
+
+            // Show card
+            document.getElementById('hall-card').style.display = 'block';
+
+            // Donut ring
+            const circumference = 188.5;
+            const pct = Math.min(hallPct, 100);
+            const offset = circumference - (circumference * pct / 100);
+            const ringColor = pct <= 25 ? '#22c55e' : pct <= 45 ? '#f59e0b' : pct <= 65 ? '#eab308' : '#ef4444';
+            const ring = document.getElementById('ring-fill');
+            ring.style.strokeDashoffset = offset;
+            ring.style.stroke = ringColor;
+            document.getElementById('ring-pct').textContent = hallPct + '%';
+            document.getElementById('ring-pct').style.color = ringColor;
+
+            // Meter
+            const meterFill = document.getElementById('meter-fill');
+            meterFill.style.width = pct + '%';
+            meterFill.style.background = ringColor;
+
+            // Class + verdict
+            document.getElementById('conf-class').textContent = cls;
+            document.getElementById('conf-class').style.color = ringColor;
+            document.getElementById('conf-verdict').textContent =
+                isHall ? 'RAG correction activated' : `Confidence: ${confidence.toFixed(1)}%`;
+            document.getElementById('support-pct').textContent = `${supportPct.toFixed(0)}%`;
+            document.getElementById('sentence-count').textContent = String(sentences.length);
+            document.getElementById('unsupported-count').textContent = String(unsupportedCount);
+            document.getElementById('source-count').textContent = String(data.source_count || 0);
+            document.getElementById('chunk-count').textContent = String(data.retrieved_chunks || 0);
+            document.getElementById('analyzed-count').textContent = String(metadata.chunks_analyzed || 0);
+            document.getElementById('sentence-analysis').style.display = 'none';
+            document.getElementById('sentence-list').innerHTML = '';
+
+            // Sentences
+            if (sentences.length > 0) {
+                document.getElementById('sentence-analysis').style.display = 'block';
+                const list = document.getElementById('sentence-list');
+                list.innerHTML = sentences.slice(0, 6).map(s => {
+                    const hp = Math.round(100 - s.score_pct);
+                    const col = hp <= 25 ? '#22c55e' : hp <= 50 ? '#f59e0b' : '#ef4444';
+                    return `<div class="sentence-row">
+        <div class="sent-dot" style="background:${col};"></div>
+        <div class="sent-text">${escHtml(s.text)}</div>
+        <div class="sent-pct" style="color:${col};">${hp}%</div>
+      </div>`;
+                }).join('');
+            }
+
+            // Verdict banner
+            const vb = document.getElementById('verdict-banner');
+            vb.style.display = 'flex';
+            if (hallPct <= 25) {
+                vb.className = 'verdict-banner ok';
+                vb.innerHTML = '✅ NOT HALLUCINATED — LLM answer is accurate and verified.';
+            } else if (hallPct <= 45) {
+                vb.className = 'verdict-banner warn';
+                vb.innerHTML = '⚠️ SLIGHTLY HALLUCINATED — minor inaccuracies. Mostly reliable.';
+            } else if (hallPct <= 65) {
+                vb.className = 'verdict-banner warn';
+                vb.innerHTML = '⚡ MODERATELY HALLUCINATED — RAG correction recommended.';
+            } else {
+                vb.className = 'verdict-banner bad';
+                vb.innerHTML = '❌ HIGHLY HALLUCINATED — LLM unreliable. RAG correcting…';
+            }
+
+            // Token analysis
+            if (tokAn.matched?.length || tokAn.unmatched?.length) {
+                document.getElementById('token-card').style.display = 'block';
+                document.getElementById('matched-tokens').innerHTML =
+                    (tokAn.matched || []).map(t => `<span class="token matched">${escHtml(t)}</span>`).join('');
+                document.getElementById('unmatched-tokens').innerHTML =
+                    (tokAn.unmatched || []).map(t => `<span class="token unmatched">${escHtml(t)}</span>`).join('');
+            }
+        }
+
+        function renderSources(sources) {
+            if (!sources?.length) return;
+            document.getElementById('sources-card').style.display = 'block';
+            document.getElementById('sources-list').innerHTML = sources.map((s, i) => `
+    <div class="source-item">
+      <div class="source-num">${i + 1}</div>
+      <a class="source-link" href="${escHtml(s.url)}" target="_blank" rel="noopener">${escHtml(s.title || s.url)}</a>
+    </div>`).join('');
+        }
+
+        function renderSummary(text) {
+            if (!text) return;
+            document.getElementById('summary-card').style.display = 'block';
+            document.getElementById('summary-text').textContent = text;
+        }
+
+        function renderContext(text) {
+            if (!text) return;
+            document.getElementById('context-card').style.display = 'block';
+            document.getElementById('context-text').textContent = text;
+        }
+
+        // Initialize Vanta HALO background
+        if (typeof VANTA !== 'undefined') {
+            VANTA.HALO({
+                el: "#welcome-overlay",
+                mouseControls: true,
+                touchControls: true,
+                gyroControls: false,
+                minHeight: 200.00,
+                minWidth: 200.00,
+                scale: 1.00,
+                scaleMobile: 1.00
+            });
+        }
+    </script>
+</body>
+
+</html>

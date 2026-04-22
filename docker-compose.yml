@@ -3,7 +3,7 @@ services:
     image: ollama/ollama:latest
     container_name: ollama-service
     ports:
-      - "11434:11434"
+      - "11435:11434"
     volumes:
       - ollama-data:/root/.ollama
     networks:
@@ -19,7 +19,7 @@ services:
   rag-app:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     container_name: rag-assistant
     ports:
       - "8080:8080"
@@ -27,6 +27,7 @@ services:
       - .env
     environment:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - USER_AGENT=${USER_AGENT:-hallucination-rag/1.0}
       - HOST=0.0.0.0
       - PORT=8080
     networks:
@@ -55,9 +56,27 @@ services:
       ollama:
         condition: service_healthy
     volumes:
-      - ./init-ollama.sh:/init-ollama.sh
       - ollama-data:/root/.ollama
-    entrypoint: ["sh", "/init-ollama.sh"]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        echo "Initializing Ollama models..."
+        sleep 5
+        if ollama list | grep -q "nomic-embed-text"; then
+          echo "nomic-embed-text already present, skipping pull."
+        else
+          echo "Pulling nomic-embed-text..."
+          ollama pull nomic-embed-text
+        fi
+        if ollama list | grep -q "llama3.2:1b"; then
+          echo "llama3.2:1b already present, skipping pull."
+        else
+          echo "Pulling llama3.2:1b..."
+          ollama pull llama3.2:1b
+        fi
+        echo "Ollama model initialization complete."
     restart: "no"
 
 networks:
