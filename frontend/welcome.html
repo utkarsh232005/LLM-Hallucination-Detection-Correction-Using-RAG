@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HalluciGuard — LLM Hallucination Detection</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Tiempos+Headline:wght@400;700&family=Instrument+Serif:ital@0;1&family=Söhne:wght@400;500;600&display=swap" rel="stylesheet" />
+  <!-- Fallback: Using Playfair Display (similar editorial feel to Tiempos) + DM Sans (clean, Claude-adjacent) -->
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,700&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ─── Design tokens ─────────────────────────────────────── */
+    :root {
+      --ink:       #1a1612;
+      --ink-soft:  #4a4540;
+      --ink-muted: #8a8580;
+      --paper:     #f7f4ef;
+      --paper-2:   #eeebe4;
+      --paper-3:   #e3dfd6;
+      --amber:     #d97706;
+      --amber-lt:  #fbbf24;
+      --red-flag:  #c0392b;
+      --green-ok:  #16a34a;
+      --blue:      #1d4ed8;
+      --shadow-sm: 0 1px 3px rgba(26,22,18,.08), 0 1px 2px rgba(26,22,18,.06);
+      --shadow-md: 0 4px 16px rgba(26,22,18,.10), 0 2px 6px rgba(26,22,18,.06);
+      --shadow-lg: 0 20px 60px rgba(26,22,18,.13), 0 6px 20px rgba(26,22,18,.08);
+      --r: 12px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 17px;
+      line-height: 1.65;
+      overflow-x: hidden;
+    }
+
+    /* ─── Grain overlay ─────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+      pointer-events: none; z-index: 1000;
+    }
+
+    /* ─── Nav ───────────────────────────────────────────────── */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 48px;
+      background: rgba(247,244,239,.88);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--paper-3);
+    }
+
+    .nav-logo {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.25rem;
+      font-weight: 900;
+      letter-spacing: -.01em;
+      color: var(--ink);
+      text-decoration: none;
+      display: flex; align-items: center; gap: 10px;
+    }
+
+    .nav-logo .logo-dot {
+      width: 10px; height: 10px;
+      background: var(--amber);
+      border-radius: 50%;
+      display: inline-block;
+      animation: pulse 2.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: .5; transform: scale(.7); }
+    }
+
+    .nav-links {
+      display: flex; align-items: center; gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--ink-soft);
+      text-decoration: none;
+      font-size: .9rem;
+      font-weight: 500;
+      letter-spacing: .01em;
+      transition: color .2s;
+    }
+
+    .nav-links a:hover { color: var(--ink); }
+
+    .nav-cta {
+      background: var(--ink);
+      color: var(--paper) !important;
+      padding: 8px 20px;
+      border-radius: 6px;
+      transition: background .2s !important;
+    }
+
+    .nav-cta:hover { background: var(--ink-soft) !important; color: var(--paper) !important; }
+
+    /* ─── Hero ──────────────────────────────────────────────── */
+    .hero {
+      min-height: 100vh;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 120px 48px 80px;
+      position: relative;
+      overflow: hidden;
+      text-align: center;
+    }
+
+    .hero-bg-text {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-family: 'Playfair Display', serif;
+      font-size: clamp(120px, 20vw, 260px);
+      font-weight: 900;
+      color: var(--paper-2);
+      letter-spacing: -.04em;
+      white-space: nowrap;
+      user-select: none;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .hero-badge {
+      position: relative; z-index: 1;
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--paper-3);
+      border: 1px solid var(--paper-3);
+      border-radius: 100px;
+      padding: 6px 16px;
+      font-size: .8rem;
+      font-weight: 500;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+      margin-bottom: 28px;
+      animation: fadeUp .6s ease both;
+    }
+
+    .hero-badge .dot { width: 6px; height: 6px; background: var(--amber); border-radius: 50%; }
+
+    .hero-title {
+      position: relative; z-index: 1;
+      font-family: 'Playfair Display', serif;
+      font-size: clamp(48px, 7vw, 96px);
+      font-weight: 900;
+      line-height: 1.0;
+      letter-spacing: -.03em;
+      color: var(--ink);
+      max-width: 860px;
+      animation: fadeUp .7s .1s ease both;
+    }
+
+    .hero-title em {
+      font-style: italic;
+      color: var(--amber);
+    }
+
+    .hero-subtitle {
+      position: relative; z-index: 1;
+      font-size: 1.15rem;
+      color: var(--ink-soft);
+      max-width: 540px;
+      margin-top: 24px;
+      font-weight: 300;
+      line-height: 1.75;
+      animation: fadeUp .7s .2s ease both;
+    }
+
+    .hero-actions {
+      position: relative; z-index: 1;
+      display: flex; gap: 16px; align-items: center;
+      margin-top: 44px;
+      animation: fadeUp .7s .3s ease both;
+    }
+
+    .btn-primary {
+      background: var(--ink);
+      color: var(--paper);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      font-weight: 500;
+      padding: 14px 32px;
+      border-radius: 8px;
+      text-decoration: none;
+      border: none; cursor: pointer;
+      transition: transform .2s, box-shadow .2s, background .2s;
+      box-shadow: var(--shadow-md);
+      letter-spacing: .01em;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-lg);
+      background: #2d2924;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--ink);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      font-weight: 500;
+      padding: 14px 32px;
+      border-radius: 8px;
+      text-decoration: none;
+      border: 1.5px solid var(--paper-3);
+      cursor: pointer;
+      transition: border-color .2s, transform .2s;
+      letter-spacing: .01em;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--ink-muted);
+      transform: translateY(-2px);
+    }
+
+    /* ─── Pipeline diagram ──────────────────────────────────── */
+    .pipeline {
+      position: relative; z-index: 1;
+      margin-top: 80px;
+      width: 100%;
+      max-width: 780px;
+      animation: fadeUp .8s .4s ease both;
+    }
+
+    .pipeline-label {
+      font-size: .75rem;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      font-weight: 500;
+      margin-bottom: 18px;
+    }
+
+    .pipeline-flow {
+      display: flex; align-items: center; justify-content: center;
+      gap: 0;
+      flex-wrap: wrap;
+    }
+
+    .pipe-node {
+      background: #fff;
+      border: 1px solid var(--paper-3);
+      border-radius: 10px;
+      padding: 14px 20px;
+      font-size: .82rem;
+      font-weight: 500;
+      color: var(--ink);
+      box-shadow: var(--shadow-sm);
+      white-space: nowrap;
+      transition: transform .2s, box-shadow .2s;
+    }
+
+    .pipe-node:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-md);
+    }
+
+    .pipe-node .node-icon { font-size: 1rem; margin-right: 7px; }
+    .pipe-node .node-label { font-size: .73rem; color: var(--ink-muted); display: block; margin-top: 2px; }
+
+    .pipe-arrow {
+      color: var(--ink-muted);
+      font-size: 1.1rem;
+      padding: 0 8px;
+      flex-shrink: 0;
+    }
+
+    .pipe-node.highlight {
+      background: var(--amber);
+      color: #fff;
+      border-color: var(--amber);
+    }
+
+    .pipe-node.highlight .node-label { color: rgba(255,255,255,.75); }
+
+    /* ─── Stats strip ───────────────────────────────────────── */
+    .stats-strip {
+      background: var(--ink);
+      color: var(--paper);
+      padding: 40px 48px;
+      display: flex; justify-content: center; gap: 80px;
+      flex-wrap: wrap;
+    }
+
+    .stat-item { text-align: center; }
+
+    .stat-value {
+      font-family: 'Playfair Display', serif;
+      font-size: 2.6rem;
+      font-weight: 900;
+      color: var(--amber-lt);
+      line-height: 1;
+      letter-spacing: -.02em;
+    }
+
+    .stat-label {
+      font-size: .8rem;
+      color: rgba(247,244,239,.55);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-top: 6px;
+      font-weight: 400;
+    }
+
+    /* ─── How It Works ──────────────────────────────────────── */
+    section {
+      padding: 100px 48px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .section-eyebrow {
+      font-size: .75rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--amber);
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+
+    .section-title {
+      font-family: 'Playfair Display', serif;
+      font-size: clamp(34px, 4.5vw, 56px);
+      font-weight: 900;
+      letter-spacing: -.025em;
+      line-height: 1.08;
+      color: var(--ink);
+      max-width: 680px;
+    }
+
+    .section-title em { font-style: italic; color: var(--amber); }
+
+    /* Steps */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-top: 56px;
+    }
+
+    .step-card {
+      background: #fff;
+      border: 1px solid var(--paper-3);
+      border-radius: var(--r);
+      padding: 32px 28px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      transition: transform .25s, box-shadow .25s;
+    }
+
+    .step-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 3px;
+      background: var(--amber);
+      transform: scaleX(0); transform-origin: left;
+      transition: transform .3s;
+    }
+
+    .step-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
+    .step-card:hover::before { transform: scaleX(1); }
+
+    .step-num {
+      font-family: 'Playfair Display', serif;
+      font-size: 3.5rem;
+      font-weight: 900;
+      color: var(--paper-3);
+      line-height: 1;
+      margin-bottom: 16px;
+      letter-spacing: -.04em;
+    }
+
+    .step-icon { font-size: 1.7rem; margin-bottom: 14px; display: block; }
+
+    .step-title {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 10px;
+      letter-spacing: -.01em;
+    }
+
+    .step-desc {
+      font-size: .9rem;
+      color: var(--ink-soft);
+      line-height: 1.7;
+      font-weight: 300;
+    }
+
+    /* ─── Stack section ─────────────────────────────────────── */
+    .stack-section {
+      background: var(--paper-2);
+      border-top: 1px solid var(--paper-3);
+      border-bottom: 1px solid var(--paper-3);
+    }
+
+    .stack-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 100px 48px;
+    }
+
+    .stack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 16px;
+      margin-top: 52px;
+    }
+
+    .stack-card {
+      background: #fff;
+      border: 1px solid var(--paper-3);
+      border-radius: 10px;
+      padding: 22px 20px;
+      text-align: center;
+      box-shadow: var(--shadow-sm);
+      transition: transform .2s, box-shadow .2s;
+    }
+
+    .stack-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
+
+    .stack-card .tech-icon { font-size: 1.9rem; display: block; margin-bottom: 10px; }
+
+    .stack-card .tech-name {
+      font-size: .85rem;
+      font-weight: 600;
+      color: var(--ink);
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .stack-card .tech-role {
+      font-size: .75rem;
+      color: var(--ink-muted);
+      display: block;
+      font-weight: 300;
+    }
+
+    /* ─── Detection badges ──────────────────────────────────── */
+    .detect-section { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 56px; }
+
+    .detect-card {
+      border-radius: var(--r);
+      padding: 36px 32px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .detect-card.ok { background: #f0fdf4; border: 2px solid #bbf7d0; }
+    .detect-card.bad { background: #fff5f5; border: 2px solid #fecaca; }
+
+    .detect-status {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex; align-items: center; gap: 10px;
+    }
+
+    .detect-card.ok .detect-status { color: var(--green-ok); }
+    .detect-card.bad .detect-status { color: var(--red-flag); }
+
+    .detect-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 100px;
+      font-size: .72rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .detect-card.ok .detect-badge { background: #bbf7d0; color: var(--green-ok); }
+    .detect-card.bad .detect-badge { background: #fecaca; color: var(--red-flag); }
+
+    .detect-desc {
+      font-size: .88rem;
+      color: var(--ink-soft);
+      line-height: 1.65;
+      margin-top: 10px;
+      font-weight: 300;
+    }
+
+    /* ─── Terminal block ────────────────────────────────────── */
+    .terminal {
+      background: #1a1612;
+      border-radius: var(--r);
+      padding: 28px 32px;
+      margin-top: 56px;
+      font-family: 'DM Mono', monospace;
+      font-size: .85rem;
+      line-height: 1.8;
+      color: #c8c4bc;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .terminal::before {
+      content: '● ● ●';
+      display: block;
+      color: #555;
+      font-size: .9rem;
+      letter-spacing: 4px;
+      margin-bottom: 18px;
+    }
+
+    .t-comment { color: #5a5550; }
+    .t-cmd { color: #fbbf24; }
+    .t-ok { color: #4ade80; }
+    .t-err { color: #f87171; }
+    .t-prompt { color: #60a5fa; }
+
+    /* ─── CTA banner ────────────────────────────────────────── */
+    .cta-banner {
+      background: var(--ink);
+      margin: 0 48px 80px;
+      border-radius: 20px;
+      padding: 72px 64px;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 48px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .cta-banner::after {
+      content: '';
+      position: absolute; top: -80px; right: -80px;
+      width: 360px; height: 360px;
+      background: radial-gradient(circle, rgba(217,119,6,.18) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .cta-title {
+      font-family: 'Playfair Display', serif;
+      font-size: clamp(28px, 3.5vw, 44px);
+      font-weight: 900;
+      color: var(--paper);
+      line-height: 1.1;
+      letter-spacing: -.02em;
+      max-width: 500px;
+      position: relative; z-index: 1;
+    }
+
+    .cta-title em { font-style: italic; color: var(--amber-lt); }
+
+    .cta-actions {
+      display: flex; gap: 14px; align-items: center;
+      flex-shrink: 0;
+      position: relative; z-index: 1;
+    }
+
+    .btn-amber {
+      background: var(--amber);
+      color: #fff;
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      font-weight: 500;
+      padding: 14px 32px;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: transform .2s, box-shadow .2s;
+      box-shadow: 0 4px 20px rgba(217,119,6,.4);
+    }
+
+    .btn-amber:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(217,119,6,.5); }
+
+    .btn-ghost {
+      background: rgba(255,255,255,.08);
+      color: rgba(247,244,239,.8);
+      font-family: 'DM Sans', sans-serif;
+      font-size: .95rem;
+      font-weight: 400;
+      padding: 14px 28px;
+      border-radius: 8px;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,.12);
+      transition: background .2s;
+    }
+
+    .btn-ghost:hover { background: rgba(255,255,255,.14); }
+
+    /* ─── Footer ────────────────────────────────────────────── */
+    footer {
+      padding: 40px 48px;
+      border-top: 1px solid var(--paper-3);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 16px;
+    }
+
+    .footer-logo {
+      font-family: 'Playfair Display', serif;
+      font-size: 1.1rem;
+      font-weight: 900;
+      color: var(--ink);
+    }
+
+    .footer-links {
+      display: flex; gap: 28px; list-style: none;
+    }
+
+    .footer-links a {
+      color: var(--ink-muted);
+      text-decoration: none;
+      font-size: .85rem;
+      transition: color .2s;
+    }
+
+    .footer-links a:hover { color: var(--ink); }
+
+    .footer-copy {
+      color: var(--ink-muted);
+      font-size: .8rem;
+    }
+
+    /* ─── Animations ────────────────────────────────────────── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(28px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity .65s ease, transform .65s ease;
+    }
+
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ─── Responsive ────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      nav { padding: 16px 24px; }
+      .nav-links { display: none; }
+      .hero { padding: 100px 24px 60px; }
+      section { padding: 72px 24px; }
+      .stack-inner { padding: 72px 24px; }
+      .stats-strip { gap: 40px; padding: 36px 24px; }
+      .detect-section { grid-template-columns: 1fr; }
+      .cta-banner { flex-direction: column; margin: 0 24px 60px; padding: 48px 32px; }
+      .cta-actions { flex-direction: column; width: 100%; }
+      footer { padding: 32px 24px; flex-direction: column; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- NAV -->
+  <nav>
+    <a href="#" class="nav-logo">
+      <span class="logo-dot"></span>
+      HalluciGuard
+    </a>
+    <ul class="nav-links">
+      <li><a href="#how">How It Works</a></li>
+      <li><a href="#stack">Tech Stack</a></li>
+      <li><a href="#setup">Setup</a></li>
+      <li><a href="https://github.com" class="nav-cta">GitHub →</a></li>
+    </ul>
+  </nav>
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-bg-text">TRUTH</div>
+
+    <div class="hero-badge">
+      <span class="dot"></span>
+      Real-time · RAG-powered · NLI Detection
+    </div>
+
+    <h1 class="hero-title">
+      Stop LLMs from<br/><em>making things up.</em>
+    </h1>
+
+    <p class="hero-subtitle">
+      A live hallucination detection &amp; correction system that verifies
+      LLM responses against real web sources using Retrieval-Augmented Generation.
+    </p>
+
+    <div class="hero-actions">
+      <a href="#setup" class="btn-primary">Get Started</a>
+      <a href="#how" class="btn-secondary">See How It Works</a>
+    </div>
+
+    <!-- Pipeline mini-diagram -->
+    <div class="pipeline">
+      <p class="pipeline-label">Detection pipeline</p>
+      <div class="pipeline-flow">
+        <div class="pipe-node">
+          <span class="node-icon">🗣️</span>User Query
+          <span class="node-label">Input</span>
+        </div>
+        <span class="pipe-arrow">→</span>
+        <div class="pipe-node">
+          <span class="node-icon">🦙</span>Llama 3.2
+          <span class="node-label">LLM Response</span>
+        </div>
+        <span class="pipe-arrow">→</span>
+        <div class="pipe-node">
+          <span class="node-icon">🌐</span>SerpAPI + RAG
+          <span class="node-label">Web Grounding</span>
+        </div>
+        <span class="pipe-arrow">→</span>
+        <div class="pipe-node highlight">
+          <span class="node-icon">🔍</span>NLI CrossEncoder
+          <span class="node-label">Hallucination?</span>
+        </div>
+        <span class="pipe-arrow">→</span>
+        <div class="pipe-node">
+          <span class="node-icon">✅</span>Verified Answer
+          <span class="node-label">Auto-corrected</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS STRIP -->
+  <div class="stats-strip">
+    <div class="stat-item">
+      <div class="stat-value">3</div>
+      <div class="stat-label">NLI Labels</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">Live</div>
+      <div class="stat-label">Web-grounded</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">SSE</div>
+      <div class="stat-label">Streaming UI</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-value">100%</div>
+      <div class="stat-label">Local LLM</div>
+    </div>
+  </div>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <div class="section-eyebrow">How It Works</div>
+    <h2 class="section-title">From query to <em>verified</em> truth in seconds.</h2>
+
+    <div class="steps-grid">
+      <div class="step-card reveal">
+        <div class="step-num">01</div>
+        <span class="step-icon">🗣️</span>
+        <div class="step-title">User Submits Query</div>
+        <p class="step-desc">
+          Your question is sent via SSE stream to the Flask backend running locally on port 8080. No data leaves your machine for the LLM step.
+        </p>
+      </div>
+
+      <div class="step-card reveal">
+        <div class="step-num">02</div>
+        <span class="step-icon">🦙</span>
+        <div class="step-title">Llama Generates Answer</div>
+        <p class="step-desc">
+          <code>llama3.2:1b</code> via Ollama produces an initial response with full local inference — no API key needed for generation.
+        </p>
+      </div>
+
+      <div class="step-card reveal">
+        <div class="step-num">03</div>
+        <span class="step-icon">🌐</span>
+        <div class="step-title">Web Sources Retrieved</div>
+        <p class="step-desc">
+          SerpAPI fetches real-time Google results. LangChain's WebBaseLoader scrapes the pages and <code>nomic-embed-text</code> embeds them into Pinecone.
+        </p>
+      </div>
+
+      <div class="step-card reveal">
+        <div class="step-num">04</div>
+        <span class="step-icon">🔬</span>
+        <div class="step-title">NLI Model Judges</div>
+        <p class="step-desc">
+          A HuggingFace CrossEncoder evaluates each (context, claim) pair and classifies: <strong>Entailment</strong>, <strong>Neutral</strong>, or <strong>Contradiction</strong>.
+        </p>
+      </div>
+
+      <div class="step-card reveal">
+        <div class="step-num">05</div>
+        <span class="step-icon">🔧</span>
+        <div class="step-title">RAG Correction</div>
+        <p class="step-desc">
+          If hallucination is detected, the system automatically runs a RAG pass — grounding the answer in verified web sources and returning a corrected response.
+        </p>
+      </div>
+
+      <div class="step-card reveal">
+        <div class="step-num">06</div>
+        <span class="step-icon">🗄️</span>
+        <div class="step-title">Logged to MySQL</div>
+        <p class="step-desc">
+          Every interaction — score, classification, sources, response time — is persisted to MySQL via the Node.js API on port 3001 for full audit trail.
+        </p>
+      </div>
+    </div>
+
+    <!-- Detection outcome cards -->
+    <div class="detect-section reveal">
+      <div class="detect-card ok">
+        <div class="detect-status">
+          ✅ Not Hallucinated
+          <span class="detect-badge">Entailment</span>
+        </div>
+        <p class="detect-desc">
+          The LLM's response is supported by web sources. The original answer is returned directly — no correction needed. Score logged to MySQL.
+        </p>
+      </div>
+      <div class="detect-card bad">
+        <div class="detect-status">
+          ⚠️ Hallucination Detected
+          <span class="detect-badge">Contradiction</span>
+        </div>
+        <p class="detect-desc">
+          The claim contradicts retrieved context. RAG kicks in automatically, regenerating the answer from verified sources and flagging the log entry.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- TECH STACK -->
+  <div class="stack-section" id="stack">
+    <div class="stack-inner">
+      <div class="section-eyebrow">Tech Stack</div>
+      <h2 class="section-title">Built on <em>proven</em> open tools.</h2>
+
+      <div class="stack-grid">
+        <div class="stack-card reveal">
+          <span class="tech-icon">🦙</span>
+          <span class="tech-name">Ollama</span>
+          <span class="tech-role">Local LLM + Embeddings</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">🌲</span>
+          <span class="tech-name">Pinecone</span>
+          <span class="tech-role">Vector Database</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">🔍</span>
+          <span class="tech-name">SerpAPI</span>
+          <span class="tech-role">Web Search</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">🤗</span>
+          <span class="tech-name">HuggingFace</span>
+          <span class="tech-role">CrossEncoder NLI</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">🐍</span>
+          <span class="tech-name">Flask</span>
+          <span class="tech-role">AI Backend</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">⛓️</span>
+          <span class="tech-name">LangChain</span>
+          <span class="tech-role">RAG Orchestration</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">🟢</span>
+          <span class="tech-name">Node.js</span>
+          <span class="tech-role">Logging API</span>
+        </div>
+        <div class="stack-card reveal">
+          <span class="tech-icon">🐬</span>
+          <span class="tech-name">MySQL 8</span>
+          <span class="tech-role">Chat Log Store</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETUP -->
+  <section id="setup">
+    <div class="section-eyebrow">Quick Start</div>
+    <h2 class="section-title">Up and running in <em>minutes.</em></h2>
+
+    <div class="terminal reveal">
+      <span class="t-comment"># 1. Clone the repo</span><br/>
+      <span class="t-prompt">$</span> <span class="t-cmd">git clone</span> https://github.com/&lt;your-username&gt;/hallucination-rag.git<br/><br/>
+      <span class="t-comment"># 2. Copy and fill in your API keys</span><br/>
+      <span class="t-prompt">$</span> <span class="t-cmd">cp</span> .env.example .env<br/><br/>
+      <span class="t-comment"># 3. Pull Ollama models</span><br/>
+      <span class="t-prompt">$</span> <span class="t-cmd">ollama pull</span> llama3.2:1b &amp;&amp; ollama pull nomic-embed-text<br/><br/>
+      <span class="t-comment"># 4. Start the Flask AI backend</span><br/>
+      <span class="t-prompt">$</span> <span class="t-cmd">python</span> backend/server.py<br/>
+      <span class="t-ok">✓ Running at http://127.0.0.1:8080</span><br/><br/>
+      <span class="t-comment"># 5. Start the Node.js logging API</span><br/>
+      <span class="t-prompt">$</span> <span class="t-cmd">node</span> api/server.js<br/>
+      <span class="t-ok">✓ Running at http://127.0.0.1:3001</span>
+    </div>
+  </section>
+
+  <!-- CTA BANNER -->
+  <div class="cta-banner">
+    <div class="cta-title">
+      Ready to detect <em>hallucinations</em> in your LLM responses?
+    </div>
+    <div class="cta-actions">
+      <a href="https://github.com" class="btn-amber">View on GitHub</a>
+      <a href="#how" class="btn-ghost">Learn More</a>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="footer-logo">HalluciGuard</div>
+    <ul class="footer-links">
+      <li><a href="#how">How It Works</a></li>
+      <li><a href="#stack">Tech Stack</a></li>
+      <li><a href="#setup">Setup</a></li>
+      <li><a href="https://github.com">GitHub</a></li>
+    </ul>
+    <div class="footer-copy">MIT License · Built with LangChain, Ollama &amp; Pinecone</div>
+  </footer>
+
+  <script>
+    // Scroll reveal
+    const reveals = document.querySelectorAll('.reveal');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry, i) => {
+        if (entry.isIntersecting) {
+          setTimeout(() => entry.target.classList.add('visible'), i * 80);
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.12 });
+    reveals.forEach(el => observer.observe(el));
+
+    // Smooth scroll for anchors
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        const id = a.getAttribute('href').slice(1);
+        const target = document.getElementById(id);
+        if (target) {
+          e.preventDefault();
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    });
+
+    // Typing cursor in terminal (subtle blink at end)
+    const terminal = document.querySelector('.terminal');
+    if (terminal) {
+      const cursor = document.createElement('span');
+      cursor.style.cssText = 'display:inline-block;width:8px;height:1em;background:#fbbf24;opacity:1;animation:blink 1s step-end infinite;vertical-align:text-bottom;margin-left:4px;';
+      terminal.appendChild(cursor);
+      const style = document.createElement('style');
+      style.textContent = '@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}';
+      document.head.appendChild(style);
+    }
+  </script>
+</body>
+</html>
