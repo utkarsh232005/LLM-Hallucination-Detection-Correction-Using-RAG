@@ -21,7 +21,7 @@ fi
 # Check Ollama
 if ! command -v ollama &> /dev/null; then
     echo "⚠️  Ollama not installed. Please install from: https://ollama.ai"
-    echo "   Models needed: llama3.2:1b, nomic-embed-text"
+    echo "   Models needed: smollm2:360m, llama3.2:latest, nomic-embed-text"
     exit 1
 fi
 

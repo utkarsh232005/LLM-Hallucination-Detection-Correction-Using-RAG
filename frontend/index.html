@@ -1320,8 +1320,8 @@
 
         <div class="model-badge" id="model-badge">
             <strong>Active Models</strong>
-            <div><span class="model-tag" id="llm-tag">llama3.2:1b</span> Chat</div>
-            <div><span class="model-tag" id="rag-tag">llama3.2:1b</span> RAG</div>
+            <div><span class="model-tag" id="llm-tag">smollm2:360m</span> Chat</div>
+            <div><span class="model-tag" id="rag-tag">llama3.2:latest</span> RAG</div>
             <div><span class="model-tag" id="emb-tag">nomic-embed-text</span> Embed</div>
         </div>
     </aside>
@@ -1537,8 +1537,8 @@
 
         function fetchModels() {
             fetch(apiUrl('/api/models')).then(r => r.json()).then(d => {
-                document.getElementById('llm-tag').textContent = d.llm || 'llama3.2:1b';
-                document.getElementById('rag-tag').textContent = d.rag || 'llama3.2:1b';
+                document.getElementById('llm-tag').textContent = d.llm || 'smollm2:360m';
+                document.getElementById('rag-tag').textContent = d.rag || 'llama3.2:latest';
                 document.getElementById('emb-tag').textContent = d.embeddings || 'nomic-embed-text';
             }).catch(() => { });
         }
@@ -1845,8 +1845,10 @@
 
         // ── analysis panel update ─────────────────────────────────────────────────────
         function updateAnalysisPanel(data) {
+            // `data.confidence` = hallucination % (0-100), computed by backend.
+            // DO NOT invert it — low value = not hallucinated, high = hallucinated.
             const confidence = data.confidence || 0;
-            const hallPct = Math.round(100 - confidence);
+            const hallPct = Math.round(confidence);  // Already the hallucination %
             const isHall = data.is_hallucinated;
             const cls = data.classification || '—';
             const sentences = data.sentence_scores || [];
@@ -1855,16 +1857,16 @@
             const supportPct = Number(tokAn.support_pct || 0);
             const unsupportedCount = (tokAn.unmatched || []).length;
 
-            document.getElementById('panel-badge').textContent = cls;
+            document.getElementById('panel-badge').textContent = isHall ? '❌ HALLUCINATED' : '✅ NOT HALLUCINATED';
 
             // Show card
             document.getElementById('hall-card').style.display = 'block';
 
-            // Donut ring
+            // Donut ring — color based on hallucination level
             const circumference = 188.5;
             const pct = Math.min(hallPct, 100);
             const offset = circumference - (circumference * pct / 100);
-            const ringColor = pct <= 25 ? '#22c55e' : pct <= 45 ? '#f59e0b' : pct <= 65 ? '#eab308' : '#ef4444';
+            const ringColor = pct <= 25 ? '#22c55e' : pct <= 50 ? '#f59e0b' : '#ef4444';
             const ring = document.getElementById('ring-fill');
             ring.style.strokeDashoffset = offset;
             ring.style.stroke = ringColor;
@@ -1877,10 +1879,10 @@
             meterFill.style.background = ringColor;
 
             // Class + verdict
-            document.getElementById('conf-class').textContent = cls;
+            document.getElementById('conf-class').textContent = isHall ? '❌ HALLUCINATED' : '✅ NOT HALLUCINATED';
             document.getElementById('conf-class').style.color = ringColor;
             document.getElementById('conf-verdict').textContent =
-                isHall ? 'RAG correction activated' : `Confidence: ${confidence.toFixed(1)}%`;
+                isHall ? `RAG correction activated (${hallPct}% hallucination)` : `Verified factual — ${hallPct}% hallucination score`;
             document.getElementById('support-pct').textContent = `${supportPct.toFixed(0)}%`;
             document.getElementById('sentence-count').textContent = String(sentences.length);
             document.getElementById('unsupported-count').textContent = String(unsupportedCount);

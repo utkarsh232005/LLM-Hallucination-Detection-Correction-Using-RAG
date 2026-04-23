@@ -36,7 +36,8 @@ A real-time hallucination detection system that verifies LLM responses against l
 - **Task:** Given a (context, claim) pair → predicts Entailment / Contradiction / Neutral
 
 ### LLM (Chat + RAG)
-- **Model:** `llama3.2:1b` via [Ollama](https://ollama.ai)
+- **Chat Model:** `smollm2:360m` via [Ollama](https://ollama.ai)
+- **RAG Model:** `llama3.2:latest` via [Ollama](https://ollama.ai)
 - **Local inference** — no API key required for the LLM
 
 ### Embeddings
@@ -179,7 +180,8 @@ cp .env.example .env
 
 #### 3. Install Ollama models
 ```bash
-ollama pull llama3.2:1b
+ollama pull smollm2:360m
+ollama pull llama3.2:latest
 ollama pull nomic-embed-text
 ```
 
@@ -265,7 +267,8 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 | Layer | Technology |
 |---|---|
-| LLM | Ollama (`llama3.2:1b`) |
+| LLM (Chat) | Ollama (`smollm2:360m`) |
+| LLM (RAG) | Ollama (`llama3.2:latest`) |
 | Embeddings | Ollama (`nomic-embed-text`) |
 | Vector DB | Pinecone |
 | Web Search | SerpAPI |

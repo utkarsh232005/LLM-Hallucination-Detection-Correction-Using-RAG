@@ -9,6 +9,7 @@ import os
 import re
 import time
 import uuid
+from datetime import datetime
 
 import threading
 import numpy as np
@@ -24,7 +25,6 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_ollama.llms import OllamaLLM
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
-from sklearn.metrics.pairwise import cosine_similarity
 
 try:
     from langchain_pinecone import PineconeVectorStore
@@ -36,9 +36,15 @@ except ImportError:
 from config import (
     EMBEDDINGS_MODEL,
     LLM_MODEL,
+    LLM_NUM_CTX,
+    LLM_NUM_PREDICT,
     LLM_TEMPERATURE,
     RAG_LLM_MODEL,
+    RAG_CONTEXT_CHAR_LIMIT,
+    RAG_NUM_CTX,
+    RAG_NUM_PREDICT,
     RAG_TEMPERATURE,
+    RETRIEVAL_K,
 )
 
 # ── env ──────────────────────────────────────────────────────────────────────
@@ -61,19 +67,17 @@ HALLUCINATION_MODEL_ID = os.getenv(
 HF_API_TOKEN = os.getenv("HF_API_TOKEN", os.getenv("HUGGINGFACEHUB_API_TOKEN", ""))
 HF_INFERENCE_TIMEOUT_SEC = float(os.getenv("HF_INFERENCE_TIMEOUT_SEC", "30"))
 
-HALLUCINATION_THRESHOLD      = 35.0
+
 CHUNK_SIZE    = 2000
 CHUNK_OVERLAP = 300
 MAX_CHUNKS    = 80
 MAX_URLS      = 10
-RETRIEVAL_K   = 12
 
 _embeddings   = None
 _llm          = None
 _llm_rag      = None
 _vector_store = None
 _hallucination_model = None
-_hf_session   = None
 
 
 def get_embeddings():
@@ -86,14 +90,26 @@ def get_embeddings():
 def get_llm():
     global _llm
     if _llm is None:
-        _llm = OllamaLLM(model=LLM_MODEL, temperature=LLM_TEMPERATURE, base_url=OLLAMA_BASE_URL)
+        _llm = OllamaLLM(
+            model=LLM_MODEL,
+            temperature=LLM_TEMPERATURE,
+            base_url=OLLAMA_BASE_URL,
+            num_predict=LLM_NUM_PREDICT,
+            num_ctx=LLM_NUM_CTX,
+        )
     return _llm
 
 
 def get_llm_rag():
     global _llm_rag
     if _llm_rag is None:
-        _llm_rag = OllamaLLM(model=RAG_LLM_MODEL, temperature=RAG_TEMPERATURE, base_url=OLLAMA_BASE_URL)
+        _llm_rag = OllamaLLM(
+            model=RAG_LLM_MODEL,
+            temperature=RAG_TEMPERATURE,
+            base_url=OLLAMA_BASE_URL,
+            num_predict=RAG_NUM_PREDICT,
+            num_ctx=RAG_NUM_CTX,
+        )
     return _llm_rag
 
 
@@ -120,18 +136,12 @@ def get_vector_store():
     return _vector_store
 
 
-def get_hf_session():
-    global _hf_session
-    if _hf_session is None:
-        _hf_session = requests.Session()
-    return _hf_session
-
-
 def get_hallucination_model():
     global _hallucination_model
     if _hallucination_model is None:
         if HF_API_TOKEN:
             os.environ.setdefault("HF_TOKEN", HF_API_TOKEN)
+        logging.info("🔄 Loading hallucination model: %s", HALLUCINATION_MODEL_ID)
         _hallucination_model = CrossEncoder(
             HALLUCINATION_MODEL_ID,
             device="cpu",
@@ -140,26 +150,16 @@ def get_hallucination_model():
         # Log the label mapping so we know which index maps to which label
         try:
             id2label = _hallucination_model.model.config.id2label
-            logging.info("CrossEncoder id2label mapping: %s", id2label)
-        except Exception:
-            pass
+            logging.info("✓ Model id2label mapping: %s", id2label)
+            logging.info("✓ Model num_labels: %d", len(id2label) if id2label else "unknown")
+        except Exception as e:
+            logging.warning("⚠ Could not get id2label mapping: %s", e)
+        
+        logging.info("✓ Model loaded successfully from: %s", HALLUCINATION_MODEL_ID)
     return _hallucination_model
 
 
-def _get_label_indices(model):
-    """Return (contradiction_idx, entailment_idx, neutral_idx) based on model's id2label.
-    Falls back to (0, 1, 2) if mapping cannot be determined."""
-    try:
-        id2label = model.model.config.id2label
-        label_to_idx = {v.lower(): int(k) for k, v in id2label.items()}
-        con_idx = next((label_to_idx[k] for k in label_to_idx if 'contra' in k or k.endswith('_0')), None)
-        ent_idx = next((label_to_idx[k] for k in label_to_idx if 'entail' in k or k.endswith('_1')), None)
-        neu_idx = next((label_to_idx[k] for k in label_to_idx if 'neutral' in k or k.endswith('_2')), None)
-        if con_idx is not None and ent_idx is not None:
-            return con_idx, ent_idx, (neu_idx if neu_idx is not None else -1)
-    except Exception:
-        pass
-    return 0, 1, 2  # safe default
+
 
 
 # ── prompt templates ──────────────────────────────────────────────────────────
@@ -295,174 +295,86 @@ def sanitize_answer(text: str) -> str:
     return text.strip()
 
 
-def split_into_sentences(text: str):
-    pattern   = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s'
-    sentences = re.split(pattern, text)
-    return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+TEMPORAL_KEYWORDS = (
+    "today",
+    "current date",
+    "date today",
+    "what day is it",
+    "today date",
+)
+
+WEEKDAYS = [
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+]
+MONTHS = [
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+]
 
 
-def embed_text(text: str, emb_model):
-    return np.array(emb_model.embed_query(text))
+def is_temporal_query(question: str) -> bool:
+    q = question.lower()
+    return any(k in q for k in TEMPORAL_KEYWORDS)
 
 
-def calc_cosine(v1, v2) -> float:
-    if np.linalg.norm(v1) == 0 or np.linalg.norm(v2) == 0:
-        return 0.0
-    return float(np.clip(cosine_similarity(v1.reshape(1, -1), v2.reshape(1, -1))[0][0], 0, 1))
+def temporal_answer_is_stale(answer: str) -> tuple[bool, str]:
+    """Detect stale date answers by matching mentioned date parts against current system date."""
+    text = answer.lower()
+    now = datetime.now()
+
+    found_weekday = next((d for d in WEEKDAYS if d in text), None)
+    found_month = next((m for m in MONTHS if m in text), None)
+
+    day_match = re.search(r"\b([0-2]?\d|3[0-1])(st|nd|rd|th)?\b", text)
+    found_day = int(day_match.group(1)) if day_match else None
+
+    year_match = re.search(r"\b(20\d{2})\b", text)
+    found_year = int(year_match.group(1)) if year_match else None
+
+    expected_weekday = now.strftime("%A").lower()
+    expected_month = now.strftime("%B").lower()
+    expected_day = now.day
+    expected_year = now.year
+
+    mismatches = []
+    if found_weekday and found_weekday != expected_weekday:
+        mismatches.append(f"weekday mismatch ({found_weekday} != {expected_weekday})")
+    if found_month and found_month != expected_month:
+        mismatches.append(f"month mismatch ({found_month} != {expected_month})")
+    if found_day is not None and found_day != expected_day:
+        mismatches.append(f"day mismatch ({found_day} != {expected_day})")
+    if found_year is not None and found_year != expected_year:
+        mismatches.append(f"year mismatch ({found_year} != {expected_year})")
+
+    if mismatches:
+        return True, "; ".join(mismatches)
+    return False, ""
 
 
-def _extract_three_way_scores(raw_json):
-    """Normalize HF inference response into contradiction/entailment/neutral scores."""
-    if isinstance(raw_json, dict) and raw_json.get("error"):
-        raise RuntimeError(raw_json.get("error"))
-
-    rows = raw_json
-    if isinstance(rows, list) and rows and isinstance(rows[0], list):
-        rows = rows[0]
-    if not isinstance(rows, list):
-        raise RuntimeError("Unexpected verifier response format")
-
-    contradiction = 0.0
-    entailment = 0.0
-    neutral = 0.0
-
-    for item in rows:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("label", "")).lower()
-        score = float(item.get("score", 0.0))
-        if "contradiction" in label or label.endswith("_0"):
-            contradiction = max(contradiction, score)
-        elif "entailment" in label or label.endswith("_1"):
-            entailment = max(entailment, score)
-        elif "neutral" in label or label.endswith("_2"):
-            neutral = max(neutral, score)
-
-    total = contradiction + entailment + neutral
-    if total <= 0:
-        neutral = 1.0
-        total = 1.0
-
-    return contradiction / total, entailment / total, neutral / total
 
 
-def verify_with_hf_api(premise: str, hypothesis: str):
-    """Run NLI verification via Hugging Face hosted inference endpoint."""
-    url = f"https://router.huggingface.co/hf-inference/models/{HALLUCINATION_MODEL_ID}"
-    headers = {"Content-Type": "application/json"}
-    if not HF_API_TOKEN:
-        raise RuntimeError("HF_API_TOKEN is required for hosted verifier mode")
-    headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
-
-    payload = {
-        "inputs": {
-            "text": premise[:2500],
-            "text_pair": hypothesis[:800],
-        },
-        "options": {
-            "wait_for_model": True,
-        },
-    }
-
-    session = get_hf_session()
-    response = session.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_SEC)
-    response.raise_for_status()
-    return _extract_three_way_scores(response.json())
 
 
-def detect_hallucination_fallback(answer: str, retrieved_docs, emb_model):
-    """Fallback detector using embedding support if hosted verifier is unavailable."""
-    sentences = split_into_sentences(answer)
-    if not sentences:
-        return {
-            "overall_confidence": 0.0,
-            "is_hallucinated": True,
-            "classification": "UNKNOWN",
-            "sentence_scores": [],
-            "metadata": {"mode": "embedding_fallback", "model_id": HALLUCINATION_MODEL_ID},
-        }
-
-    ctx_embs = []
-    for doc in retrieved_docs:
-        try:
-            ctx_embs.append(embed_text(doc.page_content, emb_model))
-        except Exception:
-            continue
-
-    if not ctx_embs:
-        return {
-            "overall_confidence": 0.0,
-            "is_hallucinated": True,
-            "classification": "NO CONTEXT",
-            "sentence_scores": [],
-            "metadata": {"mode": "embedding_fallback", "model_id": HALLUCINATION_MODEL_ID},
-        }
-
-    scores = []
-    for sentence in sentences:
-        try:
-            s_emb = embed_text(sentence, emb_model)
-            mx = max(calc_cosine(s_emb, ce) for ce in ctx_embs)
-            pct = mx * 100.0
-            if pct >= 75:
-                status = "NOT HALLUCINATED"
-            elif pct >= 50:
-                status = "SLIGHTLY HALLUCINATED"
-            elif pct >= 30:
-                status = "MODERATELY HALLUCINATED"
-            else:
-                status = "HALLUCINATED"
-            scores.append({
-                "text": sentence[:100] + ("..." if len(sentence) > 100 else ""),
-                "score": mx,
-                "score_pct": pct,
-                "status": status,
-            })
-        except Exception:
-            continue
-
-    overall = float(np.mean([s["score_pct"] for s in scores])) if scores else 0.0
-    return {
-        "overall_confidence": overall,
-        "is_hallucinated": overall < HALLUCINATION_THRESHOLD,
-        "classification": "HIGHLY HALLUCINATED" if overall < HALLUCINATION_THRESHOLD else "NOT HALLUCINATED",
-        "sentence_scores": scores,
-        "metadata": {"mode": "embedding_fallback", "model_id": HALLUCINATION_MODEL_ID},
-    }
 
 
-def _score_sentence(contradiction: float, entailment: float) -> tuple:
-    """
-    Map NLI scores to a (confidence_pct, status) pair.
 
-    Formula: confidence = (1 - contradiction) + entailment * 0.15
-      - contradiction=1, entailment=0  →   0%  HALLUCINATED
-      - contradiction=0, entailment=0  → 100%  not contradicted (neutral context)
-      - contradiction=0, entailment=1  → 115%  clamped to 100%  strongly supported
-    """
-    pct = max(0.0, min(1.0, (1.0 - contradiction) + entailment * 0.15)) * 100.0
-    if pct >= 75:
-        status = "NOT HALLUCINATED"
-    elif pct >= 50:
-        status = "SLIGHTLY HALLUCINATED"
-    elif pct >= 30:
-        status = "MODERATELY HALLUCINATED"
-    else:
-        status = "HALLUCINATED"
-    return pct, status
 
 
 def detect_hallucination(question: str, answer: str, retrieved_docs, emb_model,
                          doc_scores: list = None):
     """
-    Detect hallucinations using three signals:
-      1. NLI contradiction  — did web context actively contradict the answer?
-      2. NLI entailment ratio — how much of the answer does relevant context support?
-      3. Pinecone relevance score — is the retrieved context actually on-topic?
-
-    Returns a dict with overall_confidence (0-100), is_hallucinated (bool),
-    classification string, and per-sentence scores.
+    Simple, direct hallucination detection using the trained HF model.
+    
+    The model (Shreyash03Chimote/Hallucination_Detection) is trained to directly 
+    output hallucination probability. We simply:
+    1. Combine context chunks into a single premise
+    2. Use the answer as hypothesis
+    3. Get model's contradiction score (0=not contradicted, 1=fully contradicted)
+    4. Return binary classification: hallucinated if contradiction > 0.5
+    
+    This replaces hundreds of lines of manual threshold logic with direct model inference.
     """
+
     sentences = split_into_sentences(answer)
     if not sentences:
         sentences = [answer.strip()] if answer.strip() else []
@@ -649,6 +561,108 @@ def detect_hallucination(question: str, answer: str, retrieved_docs, emb_model,
         },
     }
 
+    try:
+        # Extract context from retrieved documents
+        context_chunks = [doc.page_content.strip() for doc in retrieved_docs if doc.page_content.strip()]
+        if not context_chunks:
+            return {
+                "overall_confidence": 0.0,
+                "is_hallucinated": True,
+                "classification": "NO CONTEXT AVAILABLE",
+                "sentence_scores": [],
+                "metadata": {"model_id": HALLUCINATION_MODEL_ID, "mode": "trained_model", "error": "no_context"},
+            }
+        
+        logging.info("✓ Retrieved %d context chunks", len(context_chunks))
+        for i, chunk in enumerate(context_chunks[:3]):
+            logging.info("  [%d] %s...", i, chunk[:150])
+        
+        # Build premise from top chunks and hypothesis from answer
+        context = " ".join(context_chunks[:5])[:2500]
+        answer_text = answer[:800]
+        
+        logging.info("✓ Hallucination detection inputs:")
+        logging.info("  Context: %s...", context[:200])
+        logging.info("  Answer: %s...", answer_text[:200])
+        
+        # Use trained NLI model for hallucination detection
+        # CRITICAL FIX: Model was TRAINED with (reference, llm_output) order
+        #   see model/app.py: scores = nli_model.predict([(reference, llm_output)])
+        # So we MUST call with (context=reference FIRST, answer=llm_output SECOND)
+        model = get_hallucination_model()
+        logging.info("✓ Calling model with (context, answer) pair — correct TRAINING ORDER")
+        # Use raw logits + scipy softmax to exactly match training code
+        raw_logits = model.predict([(context, answer_text)], convert_to_numpy=True, apply_softmax=False)
+        
+        logging.info("  Raw logits shape: %s", raw_logits.shape)
+        logging.info("  Raw logits: %s", raw_logits)
+        
+        if raw_logits.ndim == 1:
+            raw_logits = raw_logits.reshape(1, -1)
+        
+        from scipy.special import softmax as scipy_softmax
+        probs = scipy_softmax(raw_logits[0])
+        logging.info("  Softmax probabilities: %s", probs)
+        
+        # Label 0 = CONTRADICTION (answer contradicted by context -> hallucinated)
+        # Label 1 = ENTAILMENT   (answer follows from context -> factual)
+        # Label 2 = NEUTRAL      (undetermined)
+        contradiction = float(probs[0])
+        entailment = float(probs[1])
+        neutral = float(probs[2]) if len(probs) > 2 else 0.0
+        
+        logging.info("✓ Model Output: contradiction=%.4f, entailment=%.4f, neutral=%.4f", contradiction, entailment, neutral)
+        
+        # LOGIC matching training: if contradiction > 0.5 -> hallucinated
+        if contradiction > 0.5:
+            is_hallucinated = True
+            hallucination_pct = contradiction * 100.0
+            logging.info("  → contradiction > 0.5: HALLUCINATED (%.1f%%)", hallucination_pct)
+        else:
+            is_hallucinated = False
+            hallucination_pct = contradiction * 100.0
+            logging.info("  → contradiction <= 0.5: NOT HALLUCINATED (%.1f%% contradiction)", hallucination_pct)
+        
+        classification = "HALLUCINATED" if is_hallucinated else "NOT HALLUCINATED"
+        logging.info("✓ Result: is_hallucinated=%s, hallucination_pct=%.1f%%", is_hallucinated, hallucination_pct)
+        
+        return {
+            "overall_confidence": hallucination_pct,
+            "is_hallucinated": is_hallucinated,
+            "classification": classification,
+            "sentence_scores": [],
+            "metadata": {
+                "model_id": HALLUCINATION_MODEL_ID,
+                "mode": "nli_crossencoder_correct_order",
+                "model_probabilities": {
+                    "0_contradiction": contradiction,
+                    "1_entailment": entailment,
+                    "2_neutral": neutral,
+                },
+                "confidence_score": max(contradiction, entailment),
+                "threshold_used": 0.5,
+                "threshold_metric": "contradiction_probability",
+                "decision": f"contradiction={contradiction:.6f} > 0.5 -> is_hallucinated={is_hallucinated}",
+                "chunks_analyzed": len(context_chunks),
+                "decision_source": "Trained CrossEncoder (context, answer) matching training order",
+            },
+        }
+    
+    except Exception as exc:
+        logging.error("Hallucination detection failed: %s", exc, exc_info=True)
+        return {
+            "overall_confidence": 20.0,
+            "is_hallucinated": True,
+            "classification": "DETECTION ERROR",
+            "sentence_scores": [],
+            "metadata": {
+                "model_id": HALLUCINATION_MODEL_ID,
+                "mode": "trained_model",
+                "error": str(exc),
+            },
+        }
+
+
 
 def generate_llm_answer(question: str) -> str:
     chain = ChatPromptTemplate.from_template(LLM_PROMPT) | get_llm()
@@ -765,6 +779,23 @@ def chat_stream():
                 doc_scores = [float(sc) for _, sc in docs_ws]  # Pinecone relevance scores
                 result = detect_hallucination(question, llm_answer, docs, emb,
                                              doc_scores=doc_scores)
+                if is_temporal_query(question):
+                    stale, reason = temporal_answer_is_stale(llm_answer)
+                    if stale:
+                        result["is_hallucinated"] = True
+                        result["classification"] = "HALLUCINATED (TEMPORAL_MISMATCH)"
+                        result["overall_confidence"] = max(float(result.get("overall_confidence", 0.0)), 95.0)
+                        result.setdefault("metadata", {})["temporal_guard"] = {
+                            "applied": True,
+                            "stale": True,
+                            "reason": reason,
+                        }
+                    else:
+                        result.setdefault("metadata", {})["temporal_guard"] = {
+                            "applied": True,
+                            "stale": False,
+                            "reason": "",
+                        }
                 tok_an = {
                     "support_pct": None,
                     "matched": [],
@@ -776,8 +807,14 @@ def chat_stream():
                           "classification": "NO CONTEXT AVAILABLE", "sentence_scores": [],
                           "metadata": {"processing_time": 0, "model_id": HALLUCINATION_MODEL_ID}}
                 tok_an = {"support_pct": None, "matched": [], "unmatched": [], "model": HALLUCINATION_MODEL_ID}
+            # Extract hallucination % directly from result (already computed with proper logic)
+            # overall_confidence is now the hallucination_pct, calculated as:
+            # - If hallucinated (contradiction > 0.5): hallucination_pct = contradiction * 100
+            # - If NOT hallucinated: hallucination_pct = (1 - max(contradiction, entailment)) * 100
+            contradiction_display = result.get("metadata", {}).get("model_probabilities", {}).get("0_contradiction", 0.0) * 100.0
+            
             yield event("analysis", {
-                "confidence":      result["overall_confidence"],
+                "confidence":      result["overall_confidence"],  # This is the hallucination %
                 "is_hallucinated": result["is_hallucinated"],
                 "classification":  result["classification"],
                 "sentence_scores": result["sentence_scores"],
@@ -786,7 +823,8 @@ def chat_stream():
                 "source_count":    len(url_results),
                 "retrieved_chunks": len(docs),
             })
-            hall_pct = 100 - result["overall_confidence"]
+            # Use the same hallucination % for consistency
+            hall_pct = result["overall_confidence"]
             label    = f"Hallucination: {hall_pct:.0f}% — {'❌ HALLUCINATED' if result['is_hallucinated'] else '✅ NOT HALLUCINATED'}"
             yield event("step", {"step": 3, "label": label, "status": "complete"})
 
@@ -797,9 +835,7 @@ def chat_stream():
                 yield event("step", {"step": 4,
                                      "label": "Hallucination detected → generating RAG response…",
                                      "status": "running"})
-                # Raise context cap to 6000 chars — ensures relevant content
-                # (e.g. "Keir Starmer" buried deeper in the page) isn't cut off
-                rag_context = context[:6000]
+                rag_context = context[:RAG_CONTEXT_CHAR_LIMIT]
                 rag_answer  = generate_rag_answer(question, rag_context)
                 sources     = [
                     {"url": u["url"], "title": u.get("title", u["url"])[:80]}
