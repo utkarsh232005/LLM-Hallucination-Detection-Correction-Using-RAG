@@ -11,7 +11,7 @@ load_dotenv()
 # ── LLM models ────────────────────────────────────────────────────────────────
 # Override in .env:  LLM_MODEL=llama3.2:3b  RAG_LLM_MODEL=qwen2.5:3b
 
-LLM_MODEL        = os.getenv("LLM_MODEL",        "llama3.2:1b")
+LLM_MODEL        = os.getenv("LLM_MODEL",        "smollm2:360m")
 RAG_LLM_MODEL    = os.getenv("RAG_LLM_MODEL",    LLM_MODEL)
 EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL",  "nomic-embed-text")
 
