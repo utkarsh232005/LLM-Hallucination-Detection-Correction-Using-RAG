@@ -1,23 +1,37 @@
 #!/bin/sh
 set -eu
 
-echo "Initializing Ollama models..."
+OLLAMA_URL="http://${OLLAMA_HOST:-ollama:11434}"
 
-# Give the service a moment to settle after health check passes.
-sleep 5
+echo "Waiting for Ollama server at $OLLAMA_URL..."
 
-if ollama list | grep -q "nomic-embed-text"; then
-	echo "nomic-embed-text already present, skipping pull."
-else
-	echo "Pulling nomic-embed-text..."
-	ollama pull nomic-embed-text
-fi
+# Wait up to 120s for the Ollama server to become available
+MAX_RETRIES=60
+RETRY=0
+until ollama list > /dev/null 2>&1; do
+  RETRY=$((RETRY + 1))
+  if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
+    echo "ERROR: Ollama server did not start within $((MAX_RETRIES * 2))s"
+    exit 1
+  fi
+  sleep 2
+done
 
-if ollama list | grep -q "llama3.2:1b"; then
-	echo "llama3.2:1b already present, skipping pull."
-else
-	echo "Pulling llama3.2:1b..."
-	ollama pull llama3.2:1b
-fi
+echo "✓ Ollama server is ready."
 
-echo "Ollama model initialization complete."
+# ── Pull models only if not already present ───────────────────────────────────
+pull_if_missing() {
+  model="$1"
+  if ollama list 2>/dev/null | grep -q "$model"; then
+    echo "✓ $model already present — skipping pull."
+  else
+    echo "⬇ Pulling $model (this may take a few minutes on first run)..."
+    ollama pull "$model"
+    echo "✓ $model pulled successfully."
+  fi
+}
+
+pull_if_missing "smollm2:360m"
+pull_if_missing "nomic-embed-text"
+
+echo "✅ Ollama model initialization complete."

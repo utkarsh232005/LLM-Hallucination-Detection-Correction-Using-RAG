@@ -1,0 +1,18 @@
+# Dockerfile.api
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy dependency files first (layer cache — only re-installs when deps change)
+COPY package.json package-lock.json* ./
+
+# Install production dependencies only
+RUN npm ci --omit=dev && npm cache clean --force
+
+# Copy source code
+COPY api/ ./api/
+
+EXPOSE 3001
+
+CMD ["node", "api/server.js"]

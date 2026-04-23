@@ -480,64 +480,14 @@ def detect_hallucination(question: str, answer: str, retrieved_docs, emb_model,
     context_premise = "\n\n".join(context_chunks[:3])
     sentence_scores = []
 
-    # Primary path: local cross-encoder verifier.
-    try:
-        model = get_hallucination_model()
-        con_idx, ent_idx, neu_idx = _get_label_indices(model)
-        logging.info("Label indices — contradiction:%d entailment:%d neutral:%d", con_idx, ent_idx, neu_idx)
-        for sentence in sentences:
-            # Pure NLI format: premise = context chunk, hypothesis = answer sentence.
-            hypothesis = sentence[:800]
-            pairs = [(chunk[:2500], hypothesis) for chunk in context_chunks[:8]]
-            scores = model.predict(pairs, convert_to_numpy=True, apply_softmax=True)
-
-            if scores.ndim == 1:
-                scores = np.expand_dims(scores, 0)
-
-            # ── Best-pair scoring (label-aware) ──────────────────────────────
-            # Pick the chunk that gives the HIGHEST entailment score (most supportive).
-            n_labels = scores.shape[-1]
-            if n_labels >= 2:
-                _ent_col = min(ent_idx, n_labels - 1)
-                _con_col = min(con_idx, n_labels - 1)
-                best_idx      = int(np.argmax(scores[:, _ent_col]))
-                entailment    = float(scores[best_idx, _ent_col])
-                contradiction = float(scores[best_idx, _con_col])
-                if neu_idx >= 0 and neu_idx < n_labels:
-                    neutral = float(scores[best_idx, neu_idx])
-                else:
-                    neutral = max(0.0, 1.0 - entailment - contradiction)
-            else:
-                entailment    = float(np.max(scores))
-                contradiction = max(0.0, 1.0 - entailment)
-                neutral       = 0.0
-
-            # Sentence confidence = how NOT contradicted the sentence is,
-            # with a small bonus for strong entailment.
-            sentence_confidence, status = _score_sentence(contradiction, entailment)
-
-            sentence_scores.append({
-                "text":      sentence[:100] + ("..." if len(sentence) > 100 else ""),
-                "score":     sentence_confidence / 100.0,
-                "score_pct": sentence_confidence,
-                "status":    status,
-                "detail":    {"contradiction": contradiction, "entailment": entailment,
-                              "neutral": neutral, "hallucination_score": contradiction},
-            })
-    except Exception as _ce:
-        logging.warning("CrossEncoder primary path failed: %s", _ce, exc_info=True)
-        sentence_scores = []
-
-    # Secondary path: hosted HF inference if local load/predict fails.
-    if not sentence_scores:
+    # ── Primary path ── 
+    # Use fast HuggingFace API if token is provided
+    if HF_API_TOKEN:
         try:
             for sentence in sentences:
-                # Plain NLI hypothesis — no Q/A prefix
                 hypothesis = sentence[:800]
                 contradiction, entailment, neutral = verify_with_hf_api(context_premise, hypothesis)
-
                 sentence_confidence, status = _score_sentence(contradiction, entailment)
-
                 sentence_scores.append({
                     "text": sentence[:100] + ("..." if len(sentence) > 100 else ""),
                     "score": sentence_confidence / 100.0,
@@ -547,14 +497,57 @@ def detect_hallucination(question: str, answer: str, retrieved_docs, emb_model,
                         "contradiction": contradiction,
                         "entailment": entailment,
                         "neutral": neutral,
-                        "hallucination_score": sentence_hallucination,
+                        "hallucination_score": contradiction,
                     },
                 })
         except Exception as exc:
+            logging.warning("HF API path failed: %s, falling back to local...", exc)
+            sentence_scores = []
+
+    # ── Secondary path ──
+    # Local CPU CrossEncoder (slow but offline) if API failed or no token
+    if not sentence_scores:
+        try:
+            model = get_hallucination_model()
+            con_idx, ent_idx, neu_idx = _get_label_indices(model)
+            for sentence in sentences:
+                hypothesis = sentence[:800]
+                # To speed up local fallback, use top 3 chunks max
+                pairs = [(chunk[:2500], hypothesis) for chunk in context_chunks[:3]]
+                scores = model.predict(pairs, convert_to_numpy=True, apply_softmax=True)
+
+                if scores.ndim == 1:
+                    scores = np.expand_dims(scores, 0)
+
+                n_labels = scores.shape[-1]
+                if n_labels >= 2:
+                    _ent_col = min(ent_idx, n_labels - 1)
+                    _con_col = min(con_idx, n_labels - 1)
+                    best_idx      = int(np.argmax(scores[:, _ent_col]))
+                    entailment    = float(scores[best_idx, _ent_col])
+                    contradiction = float(scores[best_idx, _con_col])
+                    if neu_idx >= 0 and neu_idx < n_labels:
+                        neutral = float(scores[best_idx, neu_idx])
+                    else:
+                        neutral = max(0.0, 1.0 - entailment - contradiction)
+                else:
+                    entailment    = float(np.max(scores))
+                    contradiction = max(0.0, 1.0 - entailment)
+                    neutral       = 0.0
+
+                sentence_confidence, status = _score_sentence(contradiction, entailment)
+                sentence_scores.append({
+                    "text":      sentence[:100] + ("..." if len(sentence) > 100 else ""),
+                    "score":     sentence_confidence / 100.0,
+                    "score_pct": sentence_confidence,
+                    "status":    status,
+                    "detail":    {"contradiction": contradiction, "entailment": entailment,
+                                  "neutral": neutral, "hallucination_score": contradiction},
+                })
+        except Exception as exc:
+            logging.warning("CrossEncoder local path failed: %s", exc)
+            # ── Fallback 3: Embedding similarity ──
             fallback = detect_hallucination_fallback(answer, retrieved_docs, emb_model)
-            fallback_meta = fallback.get("metadata", {})
-            fallback_meta["hf_error"] = str(exc)
-            fallback["metadata"] = fallback_meta
             return fallback
 
     # ── Context relevance (Pinecone cosine scores) ───────────────────────────
@@ -682,7 +675,7 @@ CORS(app)
 
 @app.route("/")
 def index():
-    response = send_from_directory("static", "index.html")
+    response = send_from_directory(app.static_folder, "index.html")
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"

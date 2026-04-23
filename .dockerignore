@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+
+# Python virtual environments
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Node modules (installed inside container)
+node_modules
+
+# IDE  
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation & images (not needed in container)
+*.md
+*.png
+docs/
+ss/
+
+# Local environment files (injected via docker-compose)
+.env
+.env.local
+.env.example
+
+# Scripts (not needed inside containers)
+scripts/
+START.sh
+
+# Jupyter
+.ipynb_checkpoints
+
+# Build artifacts
+build/
+dist/
+
+# Model cache (handled by volumes)
+model/

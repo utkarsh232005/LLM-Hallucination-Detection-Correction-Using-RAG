@@ -4,6 +4,11 @@
   "description": "A Retrieval-Augmented Generation (RAG) system with **real-time hallucination detection** that automatically validates LLM-generated answers by comparing them against retrieved web content. When hallucination is detected, the system automatically provides corrected answers with source links.",
   "main": "index.js",
   "scripts": {
+    "start": "docker compose up -d --build",
+    "stop": "docker compose down",
+    "logs": "docker compose logs -f rag-app",
+    "sql": "docker compose exec db mysql -uroot -pRoot@1234 rag_app",
+    "clean": "docker compose down -v",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
