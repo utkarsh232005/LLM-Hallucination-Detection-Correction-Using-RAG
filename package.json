@@ -9,7 +9,7 @@
     "stop": "docker compose down",
     "restart": "docker compose restart rag-app",
     "logs": "docker compose logs -f rag-app",
-    "sql": "docker compose exec db mysql -uroot -pRoot@1234 rag_app",
+    "sql": "echo '' && echo '🗄  SQL Browser UI  →  http://localhost:8888' && echo '   (Server: db  |  User: root  |  DB: rag_app)' && echo '' && docker compose exec db mysql -uroot -pRoot@1234 rag_app",
     "clean": "docker compose down -v",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
