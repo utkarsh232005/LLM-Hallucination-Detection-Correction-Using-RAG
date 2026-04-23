@@ -727,106 +727,6 @@ def detect_hallucination(question: str, answer: str, retrieved_docs, emb_model,
         },
     }
 
-    try:
-        # Extract context from retrieved documents
-        context_chunks = [doc.page_content.strip() for doc in retrieved_docs if doc.page_content.strip()]
-        if not context_chunks:
-            return {
-                "overall_confidence": 0.0,
-                "is_hallucinated": True,
-                "classification": "NO CONTEXT AVAILABLE",
-                "sentence_scores": [],
-                "metadata": {"model_id": HALLUCINATION_MODEL_ID, "mode": "trained_model", "error": "no_context"},
-            }
-        
-        logging.info("✓ Retrieved %d context chunks", len(context_chunks))
-        for i, chunk in enumerate(context_chunks[:3]):
-            logging.info("  [%d] %s...", i, chunk[:150])
-        
-        # Build premise from top chunks and hypothesis from answer
-        context = " ".join(context_chunks[:5])[:2500]
-        answer_text = answer[:800]
-        
-        logging.info("✓ Hallucination detection inputs:")
-        logging.info("  Context: %s...", context[:200])
-        logging.info("  Answer: %s...", answer_text[:200])
-        
-        # Use trained NLI model for hallucination detection
-        # CRITICAL FIX: Model was TRAINED with (reference, llm_output) order
-        #   see model/app.py: scores = nli_model.predict([(reference, llm_output)])
-        # So we MUST call with (context=reference FIRST, answer=llm_output SECOND)
-        model = get_hallucination_model()
-        logging.info("✓ Calling model with (context, answer) pair — correct TRAINING ORDER")
-        # Use raw logits + scipy softmax to exactly match training code
-        raw_logits = model.predict([(context, answer_text)], convert_to_numpy=True, apply_softmax=False)
-        
-        logging.info("  Raw logits shape: %s", raw_logits.shape)
-        logging.info("  Raw logits: %s", raw_logits)
-        
-        if raw_logits.ndim == 1:
-            raw_logits = raw_logits.reshape(1, -1)
-        
-        from scipy.special import softmax as scipy_softmax
-        probs = scipy_softmax(raw_logits[0])
-        logging.info("  Softmax probabilities: %s", probs)
-        
-        # Label 0 = CONTRADICTION (answer contradicted by context -> hallucinated)
-        # Label 1 = ENTAILMENT   (answer follows from context -> factual)
-        # Label 2 = NEUTRAL      (undetermined)
-        contradiction = float(probs[0])
-        entailment = float(probs[1])
-        neutral = float(probs[2]) if len(probs) > 2 else 0.0
-        
-        logging.info("✓ Model Output: contradiction=%.4f, entailment=%.4f, neutral=%.4f", contradiction, entailment, neutral)
-        
-        # LOGIC matching training: if contradiction > 0.5 -> hallucinated
-        if contradiction > 0.5:
-            is_hallucinated = True
-            hallucination_pct = contradiction * 100.0
-            logging.info("  → contradiction > 0.5: HALLUCINATED (%.1f%%)", hallucination_pct)
-        else:
-            is_hallucinated = False
-            hallucination_pct = contradiction * 100.0
-            logging.info("  → contradiction <= 0.5: NOT HALLUCINATED (%.1f%% contradiction)", hallucination_pct)
-        
-        classification = "HALLUCINATED" if is_hallucinated else "NOT HALLUCINATED"
-        logging.info("✓ Result: is_hallucinated=%s, hallucination_pct=%.1f%%", is_hallucinated, hallucination_pct)
-        
-        return {
-            "overall_confidence": hallucination_pct,
-            "is_hallucinated": is_hallucinated,
-            "classification": classification,
-            "sentence_scores": [],
-            "metadata": {
-                "model_id": HALLUCINATION_MODEL_ID,
-                "mode": "nli_crossencoder_correct_order",
-                "model_probabilities": {
-                    "0_contradiction": contradiction,
-                    "1_entailment": entailment,
-                    "2_neutral": neutral,
-                },
-                "confidence_score": max(contradiction, entailment),
-                "threshold_used": 0.5,
-                "threshold_metric": "contradiction_probability",
-                "decision": f"contradiction={contradiction:.6f} > 0.5 -> is_hallucinated={is_hallucinated}",
-                "chunks_analyzed": len(context_chunks),
-                "decision_source": "Trained CrossEncoder (context, answer) matching training order",
-            },
-        }
-    
-    except Exception as exc:
-        logging.error("Hallucination detection failed: %s", exc, exc_info=True)
-        return {
-            "overall_confidence": 20.0,
-            "is_hallucinated": True,
-            "classification": "DETECTION ERROR",
-            "sentence_scores": [],
-            "metadata": {
-                "model_id": HALLUCINATION_MODEL_ID,
-                "mode": "trained_model",
-                "error": str(exc),
-            },
-        }
 
 
 
@@ -990,7 +890,7 @@ def chat_stream():
             contradiction_display = result.get("metadata", {}).get("model_probabilities", {}).get("0_contradiction", 0.0) * 100.0
             
             yield event("analysis", {
-                "confidence":      result["overall_confidence"],  # This is the hallucination %
+                "confidence":      100.0 - result["overall_confidence"],  # convert to hallucination%
                 "is_hallucinated": result["is_hallucinated"],
                 "classification":  result["classification"],
                 "sentence_scores": result["sentence_scores"],
@@ -999,8 +899,7 @@ def chat_stream():
                 "source_count":    len(url_results),
                 "retrieved_chunks": len(docs),
             })
-            # Use the same hallucination % for consistency
-            hall_pct = result["overall_confidence"]
+            hall_pct = 100.0 - result["overall_confidence"]  # invert: confidence→hallucination%
             label    = f"Hallucination: {hall_pct:.0f}% — {'❌ HALLUCINATED' if result['is_hallucinated'] else '✅ NOT HALLUCINATED'}"
             yield event("step", {"step": 3, "label": label, "status": "complete"})
 

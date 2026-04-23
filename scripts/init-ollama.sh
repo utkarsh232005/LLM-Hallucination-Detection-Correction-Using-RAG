@@ -32,7 +32,7 @@ pull_if_missing() {
 }
 
 pull_if_missing "smollm2:360m"
-pull_if_missing "llama3.2:1b"
+pull_if_missing "gemma2:2b"
 pull_if_missing "nomic-embed-text"
 
 echo "✅ Ollama model initialization complete."
