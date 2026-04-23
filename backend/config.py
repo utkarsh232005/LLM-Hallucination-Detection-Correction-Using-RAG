@@ -12,11 +12,7 @@ load_dotenv()
 # Override in .env:  LLM_MODEL=smollm2:360m  RAG_LLM_MODEL=llama3.2:latest
 
 LLM_MODEL        = os.getenv("LLM_MODEL",        "smollm2:360m")
-<<<<<<< HEAD
-RAG_LLM_MODEL    = os.getenv("RAG_LLM_MODEL",    LLM_MODEL)
-=======
-RAG_LLM_MODEL    = os.getenv("RAG_LLM_MODEL",    "llama3.2:latest")
->>>>>>> b87bf50d (feat: update model configurations and enhance hallucination detection)
+RAG_LLM_MODEL    = os.getenv("RAG_LLM_MODEL",    "llama3.2:1b")
 EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL",  "nomic-embed-text")
 
 LLM_TEMPERATURE  = float(os.getenv("LLM_TEMPERATURE", "0.7"))   # creative chat
