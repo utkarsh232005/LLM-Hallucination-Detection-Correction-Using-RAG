@@ -25,6 +25,7 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_ollama.llms import OllamaLLM
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
+from sklearn.metrics.pairwise import cosine_similarity
 
 try:
     from langchain_pinecone import PineconeVectorStore
@@ -35,6 +36,7 @@ except ImportError:
 
 from config import (
     EMBEDDINGS_MODEL,
+    HALLUCINATION_THRESHOLD,
     LLM_MODEL,
     LLM_NUM_CTX,
     LLM_NUM_PREDICT,
@@ -78,6 +80,14 @@ _llm          = None
 _llm_rag      = None
 _vector_store = None
 _hallucination_model = None
+_hf_session          = None
+
+
+def get_hf_session():
+    global _hf_session
+    if _hf_session is None:
+        _hf_session = requests.Session()
+    return _hf_session
 
 
 def get_embeddings():
@@ -175,26 +185,27 @@ Question: {question}
 
 Answer:"""
 
-RAG_PROMPT = """You are a fact-extraction AI that corrects LLM hallucinations using web-scraped context.
+RAG_PROMPT = """You are a precise fact-correction AI. Your job is to give a SHORT, DIRECT answer using ONLY the provided web context.
 
-Your job:
-1. Read the CONTEXT carefully — it contains scraped web data that is more recent and accurate than the LLM.
-2. Extract the direct, specific answer to the QUESTION from the context.
-3. State the answer CONFIDENTLY and CLEARLY. Do NOT say "the context doesn't mention" if the answer is present.
-4. Provide a DETAILED response (5-8 sentences) including:
-   - The direct answer (name, number, fact)
-   - Relevant background information (dates, roles, history)
-   - Any additional context that helps the user understand the topic fully
-5. Do not add URLs. Write in clear, informative prose.
+Rules:
+- Lead with the direct answer immediately — no preamble
+- Use bullet points for multiple facts
+- Maximum 4-5 bullet points or 3 sentences
+- Include only facts directly relevant to the question
+- Do NOT add background history or unrelated context
+- Do NOT say "based on available sources" unless the context truly has no answer
 
-If the context genuinely does not contain the answer, say: "Based on available web sources, I could not find a definitive answer."
+Format:
+• [Key fact 1]
+• [Key fact 2]
+• [Key fact 3]
 
 Question: {question}
 
 Context:
 {context}
 
-Detailed Fact-corrected Answer:"""
+Concise Fact-corrected Answer:"""
 
 
 
@@ -358,6 +369,161 @@ def temporal_answer_is_stale(answer: str) -> tuple[bool, str]:
 
 
 
+
+
+def split_into_sentences(text: str):
+    pattern   = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s'
+    sentences = re.split(pattern, text)
+    return [s.strip() for s in sentences if s.strip() and len(s.strip()) > 10]
+
+
+def embed_text(text: str, emb_model):
+    return np.array(emb_model.embed_query(text))
+
+
+def calc_cosine(v1, v2) -> float:
+    if np.linalg.norm(v1) == 0 or np.linalg.norm(v2) == 0:
+        return 0.0
+    return float(np.clip(cosine_similarity(v1.reshape(1, -1), v2.reshape(1, -1))[0][0], 0, 1))
+
+
+def detect_hallucination_fallback(answer: str, retrieved_docs, emb_model):
+    """Fallback detector using embedding cosine similarity if NLI verifier is unavailable."""
+    sentences = split_into_sentences(answer)
+    if not sentences:
+        return {
+            "overall_confidence": 0.0,
+            "is_hallucinated": True,
+            "classification": "UNKNOWN",
+            "sentence_scores": [],
+            "metadata": {"mode": "embedding_fallback", "model_id": HALLUCINATION_MODEL_ID},
+        }
+
+    ctx_embs = []
+    for doc in retrieved_docs:
+        try:
+            ctx_embs.append(embed_text(doc.page_content, emb_model))
+        except Exception:
+            continue
+
+    if not ctx_embs:
+        return {
+            "overall_confidence": 0.0,
+            "is_hallucinated": True,
+            "classification": "NO CONTEXT",
+            "sentence_scores": [],
+            "metadata": {"mode": "embedding_fallback", "model_id": HALLUCINATION_MODEL_ID},
+        }
+
+    scores = []
+    for sentence in sentences:
+        try:
+            s_emb = embed_text(sentence, emb_model)
+            mx = max(calc_cosine(s_emb, ce) for ce in ctx_embs)
+            pct = mx * 100.0
+            if pct >= 75:
+                status = "NOT HALLUCINATED"
+            elif pct >= 50:
+                status = "SLIGHTLY HALLUCINATED"
+            elif pct >= 30:
+                status = "MODERATELY HALLUCINATED"
+            else:
+                status = "HALLUCINATED"
+            scores.append({
+                "text": sentence[:100] + ("..." if len(sentence) > 100 else ""),
+                "score": mx,
+                "score_pct": pct,
+                "status": status,
+            })
+        except Exception:
+            continue
+
+    overall = float(np.mean([s["score_pct"] for s in scores])) if scores else 0.0
+    return {
+        "overall_confidence": overall,
+        "is_hallucinated": overall < HALLUCINATION_THRESHOLD,
+        "classification": "HIGHLY HALLUCINATED" if overall < HALLUCINATION_THRESHOLD else "NOT HALLUCINATED",
+        "sentence_scores": scores,
+        "metadata": {"mode": "embedding_fallback", "model_id": HALLUCINATION_MODEL_ID},
+    }
+
+
+def _extract_three_way_scores(raw_json):
+    """Normalize HF inference response into contradiction/entailment/neutral scores."""
+    if isinstance(raw_json, dict) and raw_json.get("error"):
+        raise RuntimeError(raw_json.get("error"))
+    rows = raw_json
+    if isinstance(rows, list) and rows and isinstance(rows[0], list):
+        rows = rows[0]
+    if not isinstance(rows, list):
+        raise RuntimeError("Unexpected verifier response format")
+    contradiction = entailment = neutral = 0.0
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "")).lower()
+        score = float(item.get("score", 0.0))
+        if "contradiction" in label or label.endswith("_0"):
+            contradiction = max(contradiction, score)
+        elif "entailment" in label or label.endswith("_1"):
+            entailment = max(entailment, score)
+        elif "neutral" in label or label.endswith("_2"):
+            neutral = max(neutral, score)
+    total = contradiction + entailment + neutral
+    if total <= 0:
+        neutral = total = 1.0
+    return contradiction / total, entailment / total, neutral / total
+
+
+def verify_with_hf_api(premise: str, hypothesis: str):
+    """Run NLI verification via HuggingFace hosted inference endpoint."""
+    url = f"https://router.huggingface.co/hf-inference/models/{HALLUCINATION_MODEL_ID}"
+    if not HF_API_TOKEN:
+        raise RuntimeError("HF_API_TOKEN is required for hosted verifier mode")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {HF_API_TOKEN}",
+    }
+    payload = {
+        "inputs": {"text": premise[:2500], "text_pair": hypothesis[:800]},
+        "options": {"wait_for_model": True},
+    }
+    session = get_hf_session()
+    response = session.post(url, headers=headers, json=payload, timeout=HF_INFERENCE_TIMEOUT_SEC)
+    response.raise_for_status()
+    return _extract_three_way_scores(response.json())
+
+
+def _get_label_indices(model):
+    """Return (contradiction_idx, entailment_idx, neutral_idx) from model's id2label."""
+    try:
+        id2label = model.model.config.id2label
+        label_to_idx = {v.lower(): int(k) for k, v in id2label.items()}
+        con_idx = next((label_to_idx[k] for k in label_to_idx if "contra" in k or k.endswith("_0")), None)
+        ent_idx = next((label_to_idx[k] for k in label_to_idx if "entail" in k or k.endswith("_1")), None)
+        neu_idx = next((label_to_idx[k] for k in label_to_idx if "neutral" in k or k.endswith("_2")), None)
+        if con_idx is not None and ent_idx is not None:
+            return con_idx, ent_idx, (neu_idx if neu_idx is not None else -1)
+    except Exception:
+        pass
+    return 0, 1, 2  # safe default
+
+
+def _score_sentence(contradiction: float, entailment: float) -> tuple:
+    """
+    Map NLI scores → (confidence_pct, status).
+    confidence = clamp(0,1, (1 - contradiction) + entailment * 0.15) * 100
+    """
+    pct = max(0.0, min(1.0, (1.0 - contradiction) + entailment * 0.15)) * 100.0
+    if pct >= 75:
+        status = "NOT HALLUCINATED"
+    elif pct >= 50:
+        status = "SLIGHTLY HALLUCINATED"
+    elif pct >= 30:
+        status = "MODERATELY HALLUCINATED"
+    else:
+        status = "HALLUCINATED"
+    return pct, status
 
 
 def detect_hallucination(question: str, answer: str, retrieved_docs, emb_model,
@@ -674,6 +840,16 @@ def generate_rag_answer(question: str, context: str) -> str:
     return sanitize_answer(chain.invoke({"question": question, "context": context}))
 
 
+SUMMARY_PROMPT = """You are a concise summarizer. Given the QUESTION and web CONTEXT, write 1-2 sentence summary of what the context says about the question topic. Be factual and brief.
+
+Question: {question}
+
+Context:
+{context}
+
+Summary:"""
+
+
 def summarize_rag_context(question: str, context: str) -> str:
     try:
         chain = ChatPromptTemplate.from_template(SUMMARY_PROMPT) | get_llm_rag()
@@ -830,8 +1006,9 @@ def chat_stream():
 
             # ── Step 4: Decision ─────────────────────────────────────────────
             rag_answer = None  # set only when RAG is used
+            context_is_relevant = result.get("metadata", {}).get("context_is_relevant", False)
             yield event("step", {"step": 4, "label": "Deciding…", "status": "running"})
-            if result["is_hallucinated"] and context:
+            if result["is_hallucinated"] and context and context_is_relevant:
                 yield event("step", {"step": 4,
                                      "label": "Hallucination detected → generating RAG response…",
                                      "status": "running"})
@@ -842,12 +1019,25 @@ def chat_stream():
                     for u in url_results[:3]
                     if isinstance(u, dict)
                 ]
-                # Send RAG response immediately — no second LLM call for summary
                 yield event("rag", {"text": rag_answer, "sources": sources,
                                     "summary": "", "is_hallucinated": True,
                                     "context_text": rag_context,
                                     "llm_answer": llm_answer})
                 yield event("step", {"step": 4, "label": "RAG response generated ✓", "status": "complete"})
+            elif result["is_hallucinated"] and not context_is_relevant:
+                # Web search returned off-topic results — RAG would hallucinate
+                sources = [
+                    {"url": u["url"], "title": u.get("title", u["url"])[:80]}
+                    for u in url_results[:3]
+                    if isinstance(u, dict)
+                ]
+                note = "⚠️ Web sources found were not relevant enough to verify or correct this answer. The original response may be inaccurate."
+                yield event("rag", {"text": note, "sources": sources,
+                                    "summary": "", "is_hallucinated": True,
+                                    "context_text": "", "llm_answer": llm_answer})
+                yield event("step", {"step": 4,
+                                     "label": "⚠️ Context irrelevant — RAG correction skipped",
+                                     "status": "complete"})
             else:
                 sources = [
                     {"url": u["url"], "title": u.get("title", u["url"])[:80]}
