@@ -267,8 +267,8 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 | Layer | Technology |
 |---|---|
-| LLM (Chat) | Ollama (`smollm2:360m`) |
-| LLM (RAG) | Ollama (`llama3.2:latest`) |
+| LLM (Chat) | Ollama (`llama3.2:latest`) |
+| LLM (RAG) | Ollama (`gemma:2b`) |
 | Embeddings | Ollama (`nomic-embed-text`) |
 | Vector DB | Pinecone |
 | Web Search | SerpAPI |
