@@ -43,46 +43,46 @@
 
 ```mermaid
 flowchart TD
-    User([User Prompt / Query]) -->|GET /api/chat/stream?q=...| Flask[Flask Backend :8080]
+    User(["User Prompt / Query"]) -->|GET /api/chat/stream?q=...| Flask["Flask Backend :8080"]
     
-    subgraph Track 1: Fast Parametric Response
-        Flask -->|Step 1: Prompt| OllamaFast[Ollama: smollm2:360m]
-        OllamaFast -->|Raw Answer| RawAnswer[Raw LLM Answer]
+    subgraph track1 ["Track 1: Fast Parametric Response"]
+        Flask -->|Step 1: Prompt| OllamaFast["Ollama: smollm2:360m"]
+        OllamaFast -->|Raw Answer| RawAnswer["Raw LLM Answer"]
     end
 
-    subgraph Track 2: Live Ground-Truth Ingestion
-        Flask -->|Step 2: Live Search| Serp[SerpAPI Google Search]
-        Serp -->|Top URLs| WebScrape[LangChain WebBaseLoader]
-        WebScrape -->|Raw HTML/Text| Splitter[RecursiveCharacterTextSplitter<br/>chunk=2000, overlap=300]
-        Splitter -->|Chunks| Nomic[Ollama: nomic-embed-text]
-        Nomic -->|Vectors| Pinecone[Pinecone Vector Store<br/>Namespace: web-rag-records]
-        Pinecone -->|k=8 Semantic Retrieval| ContextChunks[Grounded Context Chunks + Cosine Scores]
+    subgraph track2 ["Track 2: Live Ground-Truth Ingestion"]
+        Flask -->|Step 2: Live Search| Serp["SerpAPI Google Search"]
+        Serp -->|Top URLs| WebScrape["LangChain WebBaseLoader"]
+        WebScrape -->|Raw HTML/Text| Splitter["RecursiveCharacterTextSplitter<br/>chunk=2000, overlap=300"]
+        Splitter -->|Chunks| Nomic["Ollama: nomic-embed-text"]
+        Nomic -->|Vectors| Pinecone["Pinecone Vector Store<br/>Namespace: web-rag-records"]
+        Pinecone -->|k=8 Semantic Retrieval| ContextChunks["Grounded Context Chunks + Cosine Scores"]
     end
 
-    RawAnswer --> DetectionEngine{Step 3: Verification Engine}
+    RawAnswer --> DetectionEngine{"Step 3: Verification Engine"}
     ContextChunks --> DetectionEngine
 
-    subgraph Verification Engine
-        DetectionEngine --> SplitSentences[Regex Sentence Disambiguation]
-        SplitSentences --> NLI[3-Tier NLI Cross-Encoder<br/>Premise: Context | Hypothesis: Sentence]
-        NLI --> TempGuard[Temporal Mismatch Guard]
-        TempGuard --> RelevFilter[Context Relevance Weighting]
-        RelevFilter --> UnifiedScore[Unified Hallucination Score & Banding]
+    subgraph verif ["Verification Engine"]
+        DetectionEngine --> SplitSentences["Regex Sentence Disambiguation"]
+        SplitSentences --> NLI["3-Tier NLI Cross-Encoder<br/>Premise: Context vs Hypothesis: Sentence"]
+        NLI --> TempGuard["Temporal Mismatch Guard"]
+        TempGuard --> RelevFilter["Context Relevance Weighting"]
+        RelevFilter --> UnifiedScore["Unified Hallucination Score & Banding"]
     end
 
-    UnifiedScore --> DecisionGate{Is Hallucinated?<br/>Score < 65%?}
+    UnifiedScore --> DecisionGate{"Is Hallucinated?<br/>Score below 65%?"}
     
-    DecisionGate -->|No: Verified| PassThrough[Pass-Through Raw LLM Response<br/>+ Cited Web Sources]
-    DecisionGate -->|Yes & Context Relevant| RAGGen[Step 4: RAG Generator<br/>Llama-3.2 / Gemma-2B<br/>Strict Fact-Correction Prompt]
-    DecisionGate -->|Yes & Context Irrelevant| Unverifiable[Fallback: Warn Insufficient Context]
+    DecisionGate -->|No: Verified| PassThrough["Pass-Through Raw LLM Response<br/>+ Cited Web Sources"]
+    DecisionGate -->|Yes & Context Relevant| RAGGen["Step 4: RAG Generator<br/>Llama-3.2 / Gemma-2B<br/>Strict Fact-Correction Prompt"]
+    DecisionGate -->|Yes & Context Irrelevant| Unverifiable["Fallback: Warn Insufficient Context"]
 
-    PassThrough --> SSE[Server-Sent Events Stream]
+    PassThrough --> SSE["Server-Sent Events Stream"]
     RAGGen --> SSE
     Unverifiable --> SSE
-    SSE --> Frontend[Modern Responsive Web UI]
+    SSE --> Frontend["Modern Responsive Web UI"]
 
-    Flask -.->|Async Thread POST /api/save| NodeAPI[Node.js Express Microservice :3001]
-    NodeAPI -.->|INSERT chat_logs| MySQL[(MySQL Database :3306)]
+    Flask -.->|Async Thread POST /api/save| NodeAPI["Node.js Express Microservice :3001"]
+    NodeAPI -.->|INSERT chat_logs| MySQL[("MySQL Database :3306")]
 ```
 
 ---
